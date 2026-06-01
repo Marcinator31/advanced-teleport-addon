@@ -1,0 +1,23 @@
+name: ATConfirmGUI
+version: 1.0.0
+main: de.server.atconfirm.ATConfirmGUI
+api-version: '1.21'
+author: ServerOwner
+description: Adds confirmation GUIs for AdvancedTeleport tpa/tpahere/accept.
+
+# We must register our commands BEFORE AdvancedTeleport so ours take over.
+depend:
+  - AdvancedTeleport
+loadbefore:
+  - AdvancedTeleport
+
+commands:
+  tpa:
+    description: Send a teleport request (opens a confirm GUI).
+    usage: /tpa <player>
+  tpahere:
+    description: Ask a player to teleport to you (opens a confirm GUI).
+    usage: /tpahere <player>
+  tpaccept:
+    description: Accept a teleport request (opens a confirm GUI).
+    usage: /tpaccept
