@@ -1,7 +1,5 @@
 package de.server.atconfirm;
 
-import io.github.niestrat99.advancedteleport.api.TeleportRequestType;
-import io.github.niestrat99.advancedteleport.api.events.players.TeleportRequestEvent;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -10,7 +8,6 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -29,10 +26,9 @@ import java.util.List;
  * Flow:
  *  - /tpa <player>      -> opens a "Send request to <player>?" confirm GUI for the sender
  *  - /tpahere <player>  -> same, for tpahere
- *  - Incoming request   -> receiver gets AT's normal chat message AND a confirm
- *                          GUI; its title shows whether it was a TPA or TPAHere
- *  - /tpaccept          -> opens an "Accept request?" confirm GUI (one command
- *                          handles both, as in AdvancedTeleport)
+ *  - Incoming request   -> receiver gets AT's normal chat message with [Accept] button
+ *  - Clicking [Accept] or typing /tpaccept -> opens "Accept request?" confirm GUI
+ *  - Clicking green pane -> teleport is executed
  *
  * Confirming runs the real AdvancedTeleport command via the namespaced form
  * (advancedteleport:tpa etc.) so it always reaches AT regardless of aliasing.
@@ -99,30 +95,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 return false;
             }
         }
-    }
-
-    // ---------------------------------------------------------------------
-    //  Auto-open accept GUI when a request comes in
-    // ---------------------------------------------------------------------
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onRequest(TeleportRequestEvent event) {
-        Player receiver = event.getReceivingPlayer();
-        Player sender = event.getSendingPlayer();
-        if (receiver == null || sender == null) return;
-
-        boolean here = event.getRequestType() == TeleportRequestType.TPAHERE;
-
-        // The GUI title reflects which kind of request this is.
-        // Acceptance always goes through the single AT command: tpaccept.
-        String title = here
-                ? ChatColor.DARK_GRAY + "TPAHere Accept - " + sender.getName()
-                : ChatColor.DARK_GRAY + "TPA Accept - " + sender.getName();
-
-        // Open the accept-confirm GUI a tick later so AT's own chat message
-        // has already been sent and we don't fight the request creation.
-        Bukkit.getScheduler().runTask(this, () ->
-                openAcceptConfirmFor(receiver, title));
     }
 
     // ---------------------------------------------------------------------
