@@ -6,7 +6,7 @@ author: ServerOwner
 description: Adds confirmation GUIs for AdvancedTeleport tpa/tpahere/accept.
 load: STARTUP
 
-depend:
+softdepend:
   - AdvancedTeleport
 
 commands:
@@ -19,3 +19,12 @@ commands:
   tpaccept:
     description: Accept a teleport request (opens a confirm GUI).
     usage: /tpaccept
+  tpauto:
+    description: Toggle auto-accept for TPA requests.
+    usage: /tpauto
+  tpsettings:
+    description: Open teleport settings GUI.
+    usage: /tpsettings
+  settings:
+    description: Open teleport settings GUI.
+    usage: /tpsettings
