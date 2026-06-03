@@ -34,13 +34,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
     private NamespacedKey actionKey;
 
-    // Settings per player (UUID in set = feature ON)
-    private final Set<UUID> autoAccept       = new HashSet<>(); // tpauto
-    private final Set<UUID> noConfirmGui     = new HashSet<>(); // skip confirm GUIs
-    private final Set<UUID> blockTpa         = new HashSet<>(); // block incoming tpa
-    private final Set<UUID> blockTpahere     = new HashSet<>(); // block incoming tpahere
-
-    // Pending incoming requests
+    private final Set<UUID> autoAccept   = new HashSet<>();
+    private final Set<UUID> noConfirmGui = new HashSet<>();
+    private final Set<UUID> blockTpa     = new HashSet<>();
+    private final Set<UUID> blockTpahere = new HashSet<>();
     private final Set<UUID> hasPendingRequest = new HashSet<>();
 
     @Override
@@ -72,7 +69,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
         boolean isHere = event.getRequestType() == TeleportRequestType.TPAHERE;
 
-        // Block request if receiver has that type disabled — cancel the event.
         if (isHere && blockTpahere.contains(receiver.getUniqueId())) {
             event.setCancelled(true);
             sender.sendMessage(ChatColor.RED + receiver.getName() + " is not accepting TPAHere requests.");
@@ -83,8 +79,17 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             sender.sendMessage(ChatColor.RED + receiver.getName() + " is not accepting TPA requests.");
             return;
         }
-
         hasPendingRequest.add(receiver.getUniqueId());
+
+        // If receiver has tpauto on, accept automatically after 1 tick
+        // (so AT has time to register the request internally first).
+        if (autoAccept.contains(receiver.getUniqueId())) {
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (receiver.isOnline()) {
+                    receiver.performCommand("advancedteleport:tpaccept");
+                }
+            }, 1L);
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -181,71 +186,45 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
     private void openSettings(Player player) {
         Inventory inv = Bukkit.createInventory(player, 27, ChatColor.DARK_GRAY + "Teleport Settings");
-
         UUID id = player.getUniqueId();
 
-        // Slot 10: Confirm GUIs toggle
-        boolean confirmOn = !noConfirmGui.contains(id);
-        inv.setItem(10, settingButton(
-                confirmOn ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE,
-                (confirmOn ? ChatColor.GREEN : ChatColor.RED) + "Confirm GUIs",
-                List.of(
-                        ChatColor.GRAY + "Show a confirmation GUI before",
+        inv.setItem(10, settingButton(!noConfirmGui.contains(id), "Confirm GUIs",
+                List.of(ChatColor.GRAY + "Show a confirmation GUI before",
                         ChatColor.GRAY + "sending or accepting requests.",
-                        "",
-                        ChatColor.YELLOW + "Currently: " + (confirmOn ? ChatColor.GREEN + "Enabled" : ChatColor.RED + "Disabled")
-                ),
+                        "", ChatColor.YELLOW + "Currently: " + status(!noConfirmGui.contains(id))),
                 "toggle_confirm"));
 
-        // Slot 13: TPAuto toggle
-        boolean autoOn = autoAccept.contains(id);
-        inv.setItem(13, settingButton(
-                autoOn ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE,
-                (autoOn ? ChatColor.GREEN : ChatColor.RED) + "TPAuto",
-                List.of(
-                        ChatColor.GRAY + "Automatically accept all",
+        inv.setItem(13, settingButton(autoAccept.contains(id), "TPAuto",
+                List.of(ChatColor.GRAY + "Automatically accept all",
                         ChatColor.GRAY + "incoming TPA requests.",
-                        "",
-                        ChatColor.YELLOW + "Currently: " + (autoOn ? ChatColor.GREEN + "Enabled" : ChatColor.RED + "Disabled")
-                ),
+                        "", ChatColor.YELLOW + "Currently: " + status(autoAccept.contains(id))),
                 "toggle_tpauto"));
 
-        // Slot 15: Receive TPA toggle
-        boolean tpaOn = !blockTpa.contains(id);
-        inv.setItem(15, settingButton(
-                tpaOn ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE,
-                (tpaOn ? ChatColor.GREEN : ChatColor.RED) + "Receive TPA",
-                List.of(
-                        ChatColor.GRAY + "Allow others to send you",
+        inv.setItem(15, settingButton(!blockTpa.contains(id), "Receive TPA",
+                List.of(ChatColor.GRAY + "Allow others to send you",
                         ChatColor.GRAY + "TPA requests.",
-                        "",
-                        ChatColor.YELLOW + "Currently: " + (tpaOn ? ChatColor.GREEN + "Enabled" : ChatColor.RED + "Disabled")
-                ),
+                        "", ChatColor.YELLOW + "Currently: " + status(!blockTpa.contains(id))),
                 "toggle_tpa"));
 
-        // Slot 16: Receive TPAHere toggle
-        boolean tpahereOn = !blockTpahere.contains(id);
-        inv.setItem(16, settingButton(
-                tpahereOn ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE,
-                (tpahereOn ? ChatColor.GREEN : ChatColor.RED) + "Receive TPAHere",
-                List.of(
-                        ChatColor.GRAY + "Allow others to send you",
+        inv.setItem(16, settingButton(!blockTpahere.contains(id), "Receive TPAHere",
+                List.of(ChatColor.GRAY + "Allow others to send you",
                         ChatColor.GRAY + "TPAHere requests.",
-                        "",
-                        ChatColor.YELLOW + "Currently: " + (tpahereOn ? ChatColor.GREEN + "Enabled" : ChatColor.RED + "Disabled")
-                ),
+                        "", ChatColor.YELLOW + "Currently: " + status(!blockTpahere.contains(id))),
                 "toggle_tpahere"));
 
         player.openInventory(inv);
     }
 
-    private ItemStack settingButton(Material material, String name, List<String> lore, String action) {
-        return button(material, name, lore, action);
+    private String status(boolean on) {
+        return on ? ChatColor.GREEN + "Enabled" : ChatColor.RED + "Disabled";
     }
 
-    // Refresh settings GUI after a toggle click.
+    private ItemStack settingButton(boolean on, String name, List<String> lore, String action) {
+        Material mat = on ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE;
+        return button(mat, (on ? ChatColor.GREEN : ChatColor.RED) + name, lore, action);
+    }
+
     private void refreshSettings(Player player) {
-        // Close and reopen on next tick so inventory updates cleanly.
         Bukkit.getScheduler().runTaskLater(this, () -> openSettings(player), 1L);
     }
 
@@ -323,10 +302,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     @EventHandler
     public void onClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
-
         ItemStack clicked = event.getCurrentItem();
         if (clicked == null || !clicked.hasItemMeta()) return;
-
         ItemMeta meta = clicked.getItemMeta();
         String action = meta.getPersistentDataContainer().get(actionKey, PersistentDataType.STRING);
         if (action == null) return;
@@ -336,13 +313,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
         switch (action) {
             case "toggle_confirm" -> {
-                if (noConfirmGui.contains(id)) {
-                    noConfirmGui.remove(id);
-                    player.sendMessage(ChatColor.GREEN + "Confirm GUIs enabled.");
-                } else {
-                    noConfirmGui.add(id);
-                    player.sendMessage(ChatColor.RED + "Confirm GUIs disabled.");
-                }
+                if (noConfirmGui.contains(id)) noConfirmGui.remove(id);
+                else noConfirmGui.add(id);
                 refreshSettings(player);
             }
             case "toggle_tpauto" -> {
@@ -356,27 +328,16 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 refreshSettings(player);
             }
             case "toggle_tpa" -> {
-                if (blockTpa.contains(id)) {
-                    blockTpa.remove(id);
-                    player.sendMessage(ChatColor.GREEN + "You are now accepting TPA requests.");
-                } else {
-                    blockTpa.add(id);
-                    player.sendMessage(ChatColor.RED + "You are no longer accepting TPA requests.");
-                }
+                if (blockTpa.contains(id)) blockTpa.remove(id);
+                else blockTpa.add(id);
                 refreshSettings(player);
             }
             case "toggle_tpahere" -> {
-                if (blockTpahere.contains(id)) {
-                    blockTpahere.remove(id);
-                    player.sendMessage(ChatColor.GREEN + "You are now accepting TPAHere requests.");
-                } else {
-                    blockTpahere.add(id);
-                    player.sendMessage(ChatColor.RED + "You are no longer accepting TPAHere requests.");
-                }
+                if (blockTpahere.contains(id)) blockTpahere.remove(id);
+                else blockTpahere.add(id);
                 refreshSettings(player);
             }
             default -> {
-                // Normal GUI buttons ([close], advancedteleport:...)
                 for (String part : action.split(";")) {
                     String cmd = part.trim();
                     if (cmd.isEmpty()) continue;
