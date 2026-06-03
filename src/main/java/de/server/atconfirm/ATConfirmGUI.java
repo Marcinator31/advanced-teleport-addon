@@ -13,6 +13,8 @@ import org.bukkit.Sound;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import io.papermc.paper.event.player.AsyncChatEvent;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -46,6 +48,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Set<UUID> blockTpa     = new HashSet<>();
     private final Set<UUID> blockTpahere = new HashSet<>();
     private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
+    private final Map<UUID, BukkitTask> pendingStarts = new HashMap<>();
 
     // Warmup duration — must match AT's warm-up-timer-duration in config.yml
     private static final int WARMUP_SECONDS = 5;
@@ -161,10 +164,20 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 || msg.equals("/advancedteleport:home") || msg.startsWith("/advancedteleport:home ")
                 || msg.equals("/advancedteleport:spawn") || msg.startsWith("/advancedteleport:spawn ")
                 || msg.equals("/advancedteleport:back")) {
-            // Small delay so AT can start the warmup first
-            Bukkit.getScheduler().runTaskLater(this, () -> {
-                if (player.isOnline()) startActionBarCountdown(player);
-            }, 1L);
+            // Schedule countdown start - cancel if AT rejects (cooldown etc.)
+            schedulePendingCountdown(player);
+        }
+    }
+
+    // Cancel pending countdown if AT sends an error/cooldown message
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onChat(AsyncChatEvent event) {
+        Player player = event.getPlayer();
+        if (!pendingStarts.containsKey(player.getUniqueId())) return;
+        String text = PlainTextComponentSerializer.plainText().serialize(event.message());
+        // AT uses prefix "↑ »" for its messages
+        if (text.contains("↑") || text.contains("Please wait") || text.contains("cooldown")) {
+            Bukkit.getScheduler().runTask(this, () -> cancelPending(player));
         }
     }
 
@@ -187,11 +200,25 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         cancelCountdown(player);
     }
 
+    private void schedulePendingCountdown(Player player) {
+        cancelPending(player);
+        BukkitTask task = Bukkit.getScheduler().runTaskLater(this, () -> {
+            pendingStarts.remove(player.getUniqueId());
+            if (player.isOnline()) startActionBarCountdown(player);
+        }, 3L); // 3 ticks = AT has time to send cooldown message
+        pendingStarts.put(player.getUniqueId(), task);
+    }
+
+    private void cancelPending(Player player) {
+        BukkitTask t = pendingStarts.remove(player.getUniqueId());
+        if (t != null) t.cancel();
+    }
+
     private void cancelCountdown(Player player) {
         BukkitTask t = activeCountdowns.remove(player.getUniqueId());
         if (t != null) {
             t.cancel();
-            player.sendActionBar(Component.empty());
+            sendActionBar(player, Component.text("✗ Teleport cancelled!", NamedTextColor.RED), 40L);
         }
     }
 
