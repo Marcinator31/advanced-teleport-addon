@@ -2,10 +2,6 @@ package de.server.atconfirm;
 
 import io.github.niestrat99.advancedteleport.api.TeleportRequestType;
 import io.github.niestrat99.advancedteleport.api.events.players.TeleportAcceptEvent;
-import org.bukkit.Sound;
-import org.bukkit.scheduler.BukkitTask;
-import java.util.HashMap;
-import java.util.Map;
 import io.github.niestrat99.advancedteleport.api.events.players.TeleportRequestEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -13,6 +9,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.Sound;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -27,9 +24,12 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -41,9 +41,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Set<UUID> noConfirmGui = new HashSet<>();
     private final Set<UUID> blockTpa     = new HashSet<>();
     private final Set<UUID> blockTpahere = new HashSet<>();
-
-    // Active action bar countdown tasks: receiver UUID -> task
     private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
+
+    // Warmup duration — must match AT's warm-up-timer-duration in config.yml
+    private static final int WARMUP_SECONDS = 5;
 
     @Override
     public void onEnable() {
@@ -59,11 +60,13 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
+        activeCountdowns.values().forEach(BukkitTask::cancel);
+        activeCountdowns.clear();
         HandlerList.unregisterAll((Listener) this);
     }
 
     // ---------------------------------------------------------------------
-    //  Block TPA/TPAHere requests if player has them disabled
+    //  Block TPA/TPAHere if disabled, auto-accept if tpauto on
     // ---------------------------------------------------------------------
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
@@ -85,7 +88,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             return;
         }
 
-        // Auto-accept: accept 2 ticks later so AT has registered the request
         if (autoAccept.contains(receiver.getUniqueId())) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (receiver.isOnline()) {
@@ -96,12 +98,60 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     }
 
     // ---------------------------------------------------------------------
-    //  Death: disable tpauto
+    //  Start action bar countdown when request is accepted
+    // ---------------------------------------------------------------------
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAccept(TeleportAcceptEvent event) {
+        Player receiver = event.getReceivingPlayer();
+        if (receiver == null) return;
+        startActionBarCountdown(receiver);
+    }
+
+    private void startActionBarCountdown(Player player) {
+        // Cancel any existing countdown for this player
+        BukkitTask old = activeCountdowns.remove(player.getUniqueId());
+        if (old != null) old.cancel();
+
+        final int[] remaining = {WARMUP_SECONDS};
+
+        BukkitTask task = Bukkit.getScheduler().runTaskTimer(this, () -> {
+            if (!player.isOnline()) {
+                BukkitTask t = activeCountdowns.remove(player.getUniqueId());
+                if (t != null) t.cancel();
+                return;
+            }
+            if (remaining[0] > 0) {
+                // Action bar countdown
+                player.sendActionBar(Component.text(
+                        "⏱ Teleporting in " + remaining[0] + "s... do not move!",
+                        NamedTextColor.AQUA));
+                // Tick sound: soft hat each second, higher on last second
+                float pitch = remaining[0] == 1 ? 2.0f : 1.0f;
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_HAT, 0.6f, pitch);
+                remaining[0]--;
+            } else {
+                // Done — clear action bar
+                player.sendActionBar(Component.empty());
+                BukkitTask t = activeCountdowns.remove(player.getUniqueId());
+                if (t != null) t.cancel();
+            }
+        }, 0L, 20L);
+
+        activeCountdowns.put(player.getUniqueId(), task);
+    }
+
+    // ---------------------------------------------------------------------
+    //  Death: disable tpauto, cancel countdown
     // ---------------------------------------------------------------------
 
     @EventHandler
     public void onDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
+        // Cancel countdown
+        BukkitTask t = activeCountdowns.remove(player.getUniqueId());
+        if (t != null) t.cancel();
+
         if (autoAccept.remove(player.getUniqueId())) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline())
@@ -141,7 +191,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 return true;
             }
             case "tpaccept" -> {
-                // tpauto on or confirm GUIs off: accept directly
                 if (autoAccept.contains(player.getUniqueId()) || noConfirmGui.contains(player.getUniqueId())) {
                     player.performCommand("advancedteleport:tpaccept");
                 } else {
