@@ -161,7 +161,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         String msg = event.getMessage().toLowerCase().trim();
         // Match /tpr, /rtp, /home, /spawn, /back and their namespaced forms
         String cmdName = null;
-        if (msg.equals("/home") || msg.startsWith("/home ")
+        if (msg.equals("/advancedteleport:tpr") || msg.startsWith("/advancedteleport:tpr ")) {
+            // Only the namespaced form = GUI confirm click, not /rtp which opens the GUI
+            cmdName = "tpr";
+        } else if (msg.equals("/home") || msg.startsWith("/home ")
                 || msg.equals("/advancedteleport:home") || msg.startsWith("/advancedteleport:home ")) {
             cmdName = "home";
         } else if (msg.equals("/spawn") || msg.startsWith("/spawn ")
