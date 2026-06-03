@@ -171,6 +171,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             case "tpauto" -> {
                 if (autoAccept.contains(player.getUniqueId())) {
                     autoAccept.remove(player.getUniqueId());
+                    autoAccepting.remove(player.getUniqueId()); // clear pending auto-accept flag
                     sendActionBar(player, Component.text("You disabled tpauto", NamedTextColor.RED), 40L);
                 } else {
                     autoAccept.add(player.getUniqueId());
