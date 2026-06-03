@@ -8,7 +8,6 @@ load: STARTUP
 
 softdepend:
   - AdvancedTeleport
-  - DeluxeMenus
 
 commands:
   tpa:
@@ -26,15 +25,3 @@ commands:
   tpsettings:
     description: Open teleport settings.
     usage: /tpsettings
-  home:
-    description: Teleport to your home.
-    usage: /home [name]
-  spawn:
-    description: Teleport to spawn.
-    usage: /spawn
-  back:
-    description: Teleport to last location.
-    usage: /back
-  rtp:
-    description: Random teleport (opens GUI).
-    usage: /rtp
