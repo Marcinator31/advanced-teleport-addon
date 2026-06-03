@@ -10,7 +10,10 @@ import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.Location;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -111,8 +114,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
     private void startActionBarCountdown(Player player) {
         // Cancel any existing countdown for this player
-        BukkitTask old = activeCountdowns.remove(player.getUniqueId());
-        if (old != null) old.cancel();
+        cancelCountdown(player);
 
         final int[] remaining = {WARMUP_SECONDS};
 
@@ -152,7 +154,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         String msg = event.getMessage().toLowerCase().trim();
         // Match /tpr, /rtp, /home, /spawn, /back and their namespaced forms
         if (msg.equals("/tpr") || msg.startsWith("/tpr ")
-                || msg.equals("/rtp") || msg.startsWith("/rtp ")
                 || msg.equals("/home") || msg.startsWith("/home ")
                 || msg.equals("/spawn") || msg.startsWith("/spawn ")
                 || msg.equals("/back")
@@ -164,6 +165,33 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline()) startActionBarCountdown(player);
             }, 1L);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onMove(PlayerMoveEvent event) {
+        Player player = event.getPlayer();
+        if (!activeCountdowns.containsKey(player.getUniqueId())) return;
+        Location from = event.getFrom();
+        Location to = event.getTo();
+        if (to == null) return;
+        if (from.getBlockX() == to.getBlockX()
+                && from.getBlockY() == to.getBlockY()
+                && from.getBlockZ() == to.getBlockZ()) return;
+        cancelCountdown(player);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onDamage(EntityDamageEvent event) {
+        if (!(event.getEntity() instanceof Player player)) return;
+        cancelCountdown(player);
+    }
+
+    private void cancelCountdown(Player player) {
+        BukkitTask t = activeCountdowns.remove(player.getUniqueId());
+        if (t != null) {
+            t.cancel();
+            player.sendActionBar(Component.empty());
         }
     }
 
@@ -324,7 +352,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         inv.setItem(11, button(Material.LIME_STAINED_GLASS_PANE,
                 ChatColor.GREEN + "Confirm",
                 List.of(ChatColor.GRAY + "Send the request to " + target + "."),
-                "[close];advancedteleport:" + baseCmd + " " + target));
+                "[close];advancedteleport:" + baseCmd + " " + target + ";start_countdown"));
         inv.setItem(15, button(Material.RED_STAINED_GLASS_PANE,
                 ChatColor.RED + "Cancel",
                 List.of(ChatColor.GRAY + "Do not send the request."),
@@ -405,6 +433,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     if (cmd.isEmpty()) continue;
                     if (cmd.equalsIgnoreCase("[close]")) {
                         player.closeInventory();
+                    } else if (cmd.equalsIgnoreCase("start_countdown")) {
+                        Bukkit.getScheduler().runTaskLater(ATConfirmGUI.this, () -> {
+                            if (player.isOnline()) startActionBarCountdown(player);
+                        }, 1L);
                     } else {
                         player.performCommand(cmd);
                     }
