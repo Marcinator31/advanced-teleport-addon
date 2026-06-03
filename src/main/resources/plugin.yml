@@ -3,7 +3,7 @@ version: 1.0.0
 main: de.server.atconfirm.ATConfirmGUI
 api-version: '1.21'
 author: ServerOwner
-description: Adds confirmation GUIs and warmup countdown for AdvancedTeleport.
+description: Adds confirmation GUIs for AdvancedTeleport tpa/tpahere/accept.
 load: STARTUP
 
 softdepend:
@@ -11,17 +11,20 @@ softdepend:
 
 commands:
   tpa:
-    description: Send a teleport request.
+    description: Send a teleport request (opens a confirm GUI).
     usage: /tpa <player>
   tpahere:
-    description: Ask a player to teleport to you.
+    description: Ask a player to teleport to you (opens a confirm GUI).
     usage: /tpahere <player>
   tpaccept:
-    description: Accept a teleport request.
+    description: Accept a teleport request (opens a confirm GUI).
     usage: /tpaccept
   tpauto:
-    description: Toggle auto-accept.
+    description: Toggle auto-accept for TPA requests.
     usage: /tpauto
   tpsettings:
-    description: Open teleport settings.
+    description: Open teleport settings GUI.
+    usage: /tpsettings
+  settings:
+    description: Open teleport settings GUI.
     usage: /tpsettings
