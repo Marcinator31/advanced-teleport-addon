@@ -200,7 +200,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             String key = player.getUniqueId() + ":" + finalCmd;
             long now = System.currentTimeMillis();
             Long last = lastCommandUse.get(key);
-            if (last != null && (now - last) < COOLDOWN_MS) { event.setCancelled(true); return; } // still on cooldown - cancel command too
+            if (last != null && (now - last) < COOLDOWN_MS) return; // still on cooldown
             lastCommandUse.put(key, now); // set timestamp immediately to block spam
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline()) schedulePendingCountdown(player, finalCmd);
