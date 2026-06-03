@@ -161,10 +161,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         String msg = event.getMessage().toLowerCase().trim();
         // Match /tpr, /rtp, /home, /spawn, /back and their namespaced forms
         String cmdName = null;
-        if (msg.equals("/tpr") || msg.startsWith("/tpr ") || msg.equals("/rtp") || msg.startsWith("/rtp ")
-                || msg.equals("/advancedteleport:tpr") || msg.startsWith("/advancedteleport:tpr ")) {
-            cmdName = "tpr";
-        } else if (msg.equals("/home") || msg.startsWith("/home ")
+        if (msg.equals("/home") || msg.startsWith("/home ")
                 || msg.equals("/advancedteleport:home") || msg.startsWith("/advancedteleport:home ")) {
             cmdName = "home";
         } else if (msg.equals("/spawn") || msg.startsWith("/spawn ")
@@ -175,6 +172,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         }
         if (cmdName != null) {
             final String finalCmd = cmdName;
+            String key = player.getUniqueId() + ":" + finalCmd;
+            long now = System.currentTimeMillis();
+            Long last = lastCommandUse.get(key);
+            if (last != null && (now - last) < COOLDOWN_MS) return; // still on cooldown
+            lastCommandUse.put(key, now); // set timestamp immediately to block spam
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline()) schedulePendingCountdown(player, finalCmd);
             }, 1L);
@@ -221,7 +223,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             // Still on cooldown for this specific command - don't start countdown
             return;
         }
-        lastCommandUse.put(key, now);
         BukkitTask task = Bukkit.getScheduler().runTaskLater(this, () -> {
             pendingStarts.remove(player.getUniqueId());
             if (player.isOnline()) startActionBarCountdown(player);
