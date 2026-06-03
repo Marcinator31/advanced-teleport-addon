@@ -1,7 +1,6 @@
 package de.server.atconfirm;
 
 import io.github.niestrat99.advancedteleport.api.TeleportRequestType;
-import io.github.niestrat99.advancedteleport.api.events.players.TeleportAcceptEvent;
 import io.github.niestrat99.advancedteleport.api.events.players.TeleportRequestEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -48,6 +47,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Set<UUID> noConfirmGui = new HashSet<>();
     private final Set<UUID> blockTpa     = new HashSet<>();
     private final Set<UUID> blockTpahere = new HashSet<>();
+    // receiver UUID -> {senderName, isHere}
+    private final Map<UUID, String[]> pendingRequestInfo = new HashMap<>();
     private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
     private final Map<UUID, BukkitTask> pendingStarts = new HashMap<>();
     // Tracks last successful command use time (ms) per player per command name
@@ -100,6 +101,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             return;
         }
 
+        pendingRequestInfo.put(receiver.getUniqueId(), new String[]{sender.getName(), String.valueOf(isHere)});
+
         if (autoAccept.contains(receiver.getUniqueId())) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (receiver.isOnline()) {
@@ -113,12 +116,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     //  Start action bar countdown when request is accepted
     // ---------------------------------------------------------------------
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onAccept(TeleportAcceptEvent event) {
-        Player receiver = event.getReceivingPlayer();
-        if (receiver == null) return;
-        startActionBarCountdown(receiver);
-    }
+    // TeleportAcceptEvent removed - countdown starts from GUI confirm click instead
 
     private void startActionBarCountdown(Player player) {
         // Cancel any existing countdown for this player
@@ -438,7 +436,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         inv.setItem(11, button(Material.LIME_STAINED_GLASS_PANE,
                 ChatColor.GREEN + "Accept",
                 List.of(ChatColor.GRAY + "Accept the teleport request."),
-                "[close];advancedteleport:tpaccept"));
+                "[close];advancedteleport:tpaccept;start_tpa_countdown"));
         inv.setItem(15, button(Material.RED_STAINED_GLASS_PANE,
                 ChatColor.RED + "Deny",
                 List.of(ChatColor.GRAY + "Deny the teleport request."),
