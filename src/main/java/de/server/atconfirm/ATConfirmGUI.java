@@ -12,6 +12,7 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
@@ -152,19 +153,36 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     }
 
     // ---------------------------------------------------------------------
+    //  Detect warmup start: AT sends a specific action bar during warmup
+    //  We hook into PlayerTeleportEvent to detect when AT actually teleports
+    //  and cancel our countdown at that point
+    // ---------------------------------------------------------------------
+
+    // We detect warmup by listening for the command and checking if AT
+    // starts its warmup via a scheduled task check
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onTeleport(PlayerTeleportEvent event) {
+        Player player = event.getPlayer();
+        // Teleport happened - cancel countdown (warmup done)
+        BukkitTask t = activeCountdowns.remove(player.getUniqueId());
+        if (t != null) {
+            t.cancel();
+            player.sendActionBar(Component.empty());
+        }
+        cancelPending(player);
+    }
+
+    // ---------------------------------------------------------------------
     //  Start countdown for RTP / Home / Spawn / Back commands
     // ---------------------------------------------------------------------
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.LOWEST)
     public void onCommand(PlayerCommandPreprocessEvent event) {
         Player player = event.getPlayer();
         String msg = event.getMessage().toLowerCase().trim();
         // Match /tpr, /rtp, /home, /spawn, /back and their namespaced forms
         String cmdName = null;
-        if (msg.equals("/advancedteleport:tpr") || msg.startsWith("/advancedteleport:tpr ")) {
-            // Only the namespaced form = GUI confirm click, not /rtp which opens the GUI
-            cmdName = "tpr";
-        } else if (msg.equals("/home") || msg.startsWith("/home ")
+        if (msg.equals("/home") || msg.startsWith("/home ")
                 || msg.equals("/advancedteleport:home") || msg.startsWith("/advancedteleport:home ")) {
             cmdName = "home";
         } else if (msg.equals("/spawn") || msg.startsWith("/spawn ")
@@ -178,8 +196,12 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             String key = player.getUniqueId() + ":" + finalCmd;
             long now = System.currentTimeMillis();
             Long last = lastCommandUse.get(key);
-            if (last != null && (now - last) < COOLDOWN_MS) return; // still on cooldown
-            lastCommandUse.put(key, now); // set timestamp immediately to block spam
+            if (last != null && (now - last) < COOLDOWN_MS) {
+                // Still on cooldown - cancel the command entirely so AT doesn't execute it
+                event.setCancelled(true);
+                return;
+            }
+            lastCommandUse.put(key, now);
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline()) schedulePendingCountdown(player, finalCmd);
             }, 1L);
@@ -187,7 +209,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     }
 
     // Cancel pending countdown if AT sends an error/cooldown message
-    @EventHandler(priority = EventPriority.MONITOR)
+    @EventHandler(priority = EventPriority.LOW)
     public void onChat(AsyncChatEvent event) {
         Player player = event.getPlayer();
         if (!pendingStarts.containsKey(player.getUniqueId())) return;
