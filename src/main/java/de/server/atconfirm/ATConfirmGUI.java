@@ -39,6 +39,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Set<UUID> blockTpa     = new HashSet<>();
     private final Set<UUID> blockTpahere = new HashSet<>();
     private final Set<UUID> hasPendingRequest = new HashSet<>();
+    private final Set<UUID> autoAccepting = new HashSet<>();
 
     @Override
     public void onEnable() {
@@ -84,6 +85,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         // If receiver has tpauto on, accept automatically after 1 tick
         // (so AT has time to register the request internally first).
         if (autoAccept.contains(receiver.getUniqueId())) {
+            autoAccepting.add(receiver.getUniqueId());
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (receiver.isOnline()) {
                     receiver.performCommand("advancedteleport:tpaccept");
@@ -155,7 +157,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     player.sendMessage(ChatColor.RED + "You don't have any pending requests!");
                     return true;
                 }
-                if (autoAccept.contains(player.getUniqueId()) || noConfirmGui.contains(player.getUniqueId())) {
+                // tpauto already handles accepting automatically via the event,
+                // but if player manually types /tpaccept while tpauto is on,
+                // just accept directly without GUI.
+                boolean isAutoAccept = autoAccepting.remove(player.getUniqueId());
+                if (isAutoAccept || autoAccept.contains(player.getUniqueId()) || noConfirmGui.contains(player.getUniqueId())) {
                     player.performCommand("advancedteleport:tpaccept");
                 } else {
                     openAcceptConfirmFor(player, ChatColor.DARK_GRAY + "Accept request?");
