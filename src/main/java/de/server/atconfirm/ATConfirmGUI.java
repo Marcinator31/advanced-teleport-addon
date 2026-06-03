@@ -49,6 +49,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Set<UUID> blockTpahere = new HashSet<>();
     private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
     private final Map<UUID, BukkitTask> pendingStarts = new HashMap<>();
+    // Tracks last successful command use time (ms) per player per command
+    private final Map<UUID, Long> lastCommandUse = new HashMap<>();
+    // AT cooldown in ms: warm-up-timer-duration(5) + cooldown-duration(5) = 10 seconds
+    private static final long COOLDOWN_MS = 10_000L;
 
     // Warmup duration — must match AT's warm-up-timer-duration in config.yml
     private static final int WARMUP_SECONDS = 5;
@@ -202,10 +206,18 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
     private void schedulePendingCountdown(Player player) {
         cancelPending(player);
+        long now = System.currentTimeMillis();
+        Long last = lastCommandUse.get(player.getUniqueId());
+        if (last != null && (now - last) < COOLDOWN_MS) {
+            // Still on cooldown - don't start countdown
+            return;
+        }
+        // Record this use
+        lastCommandUse.put(player.getUniqueId(), now);
         BukkitTask task = Bukkit.getScheduler().runTaskLater(this, () -> {
             pendingStarts.remove(player.getUniqueId());
             if (player.isOnline()) startActionBarCountdown(player);
-        }, 3L); // 3 ticks = AT has time to send cooldown message
+        }, 2L);
         pendingStarts.put(player.getUniqueId(), task);
     }
 
