@@ -1,6 +1,11 @@
 package de.server.atconfirm;
 
 import io.github.niestrat99.advancedteleport.api.TeleportRequestType;
+import io.github.niestrat99.advancedteleport.api.events.players.TeleportAcceptEvent;
+import org.bukkit.Sound;
+import org.bukkit.scheduler.BukkitTask;
+import java.util.HashMap;
+import java.util.Map;
 import io.github.niestrat99.advancedteleport.api.events.players.TeleportRequestEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -36,6 +41,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Set<UUID> noConfirmGui = new HashSet<>();
     private final Set<UUID> blockTpa     = new HashSet<>();
     private final Set<UUID> blockTpahere = new HashSet<>();
+
+    // Active action bar countdown tasks: receiver UUID -> task
+    private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
 
     @Override
     public void onEnable() {
