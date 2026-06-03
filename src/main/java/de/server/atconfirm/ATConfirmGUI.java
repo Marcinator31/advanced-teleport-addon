@@ -10,6 +10,7 @@ import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
+import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -128,7 +129,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                         NamedTextColor.AQUA));
                 // Tick sound: soft hat each second, higher on last second
                 float pitch = remaining[0] == 1 ? 2.0f : 1.0f;
-                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_HAT, 0.6f, pitch);
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, pitch);
                 remaining[0]--;
             } else {
                 // Done — clear action bar
@@ -139,6 +140,31 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         }, 0L, 20L);
 
         activeCountdowns.put(player.getUniqueId(), task);
+    }
+
+    // ---------------------------------------------------------------------
+    //  Start countdown for RTP / Home / Spawn / Back commands
+    // ---------------------------------------------------------------------
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onCommand(PlayerCommandPreprocessEvent event) {
+        Player player = event.getPlayer();
+        String msg = event.getMessage().toLowerCase().trim();
+        // Match /tpr, /rtp, /home, /spawn, /back and their namespaced forms
+        if (msg.equals("/tpr") || msg.startsWith("/tpr ")
+                || msg.equals("/rtp") || msg.startsWith("/rtp ")
+                || msg.equals("/home") || msg.startsWith("/home ")
+                || msg.equals("/spawn") || msg.startsWith("/spawn ")
+                || msg.equals("/back")
+                || msg.equals("/advancedteleport:tpr") || msg.startsWith("/advancedteleport:tpr ")
+                || msg.equals("/advancedteleport:home") || msg.startsWith("/advancedteleport:home ")
+                || msg.equals("/advancedteleport:spawn") || msg.startsWith("/advancedteleport:spawn ")
+                || msg.equals("/advancedteleport:back")) {
+            // Small delay so AT can start the warmup first
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (player.isOnline()) startActionBarCountdown(player);
+            }, 1L);
+        }
     }
 
     // ---------------------------------------------------------------------
