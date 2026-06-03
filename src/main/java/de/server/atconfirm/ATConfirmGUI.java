@@ -1,9 +1,7 @@
 package de.server.atconfirm;
 
-import io.github.niestrat99.advancedteleport.api.events.players.TeleportAcceptEvent;
-import io.github.niestrat99.advancedteleport.api.events.players.TeleportDenyEvent;
-import io.github.niestrat99.advancedteleport.api.events.players.TeleportRequestEvent;
 import io.github.niestrat99.advancedteleport.api.TeleportRequestType;
+import io.github.niestrat99.advancedteleport.api.events.players.TeleportRequestEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -38,8 +36,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Set<UUID> noConfirmGui = new HashSet<>();
     private final Set<UUID> blockTpa     = new HashSet<>();
     private final Set<UUID> blockTpahere = new HashSet<>();
-    private final Set<UUID> hasPendingRequest = new HashSet<>();
-    private final Set<UUID> autoAccepting = new HashSet<>();
 
     @Override
     public void onEnable() {
@@ -59,10 +55,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     }
 
     // ---------------------------------------------------------------------
-    //  Track pending requests
+    //  Block TPA/TPAHere requests if player has them disabled
     // ---------------------------------------------------------------------
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onRequest(TeleportRequestEvent event) {
         Player receiver = event.getReceivingPlayer();
         Player sender   = event.getSendingPlayer();
@@ -80,30 +76,15 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             sender.sendMessage(ChatColor.RED + receiver.getName() + " is not accepting TPA requests.");
             return;
         }
-        hasPendingRequest.add(receiver.getUniqueId());
 
-        // If receiver has tpauto on, accept automatically after 1 tick
-        // (so AT has time to register the request internally first).
+        // Auto-accept: accept 2 ticks later so AT has registered the request
         if (autoAccept.contains(receiver.getUniqueId())) {
-            autoAccepting.add(receiver.getUniqueId());
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (receiver.isOnline()) {
                     receiver.performCommand("advancedteleport:tpaccept");
                 }
-            }, 1L);
+            }, 2L);
         }
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onAccept(TeleportAcceptEvent event) {
-        Player receiver = event.getReceivingPlayer();
-        if (receiver != null) hasPendingRequest.remove(receiver.getUniqueId());
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onDeny(TeleportDenyEvent event) {
-        Player receiver = event.getReceivingPlayer();
-        if (receiver != null) hasPendingRequest.remove(receiver.getUniqueId());
     }
 
     // ---------------------------------------------------------------------
@@ -113,7 +94,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     @EventHandler
     public void onDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
-        hasPendingRequest.remove(player.getUniqueId());
         if (autoAccept.remove(player.getUniqueId())) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline())
@@ -153,15 +133,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 return true;
             }
             case "tpaccept" -> {
-                if (!hasPendingRequest.contains(player.getUniqueId())) {
-                    player.sendMessage(ChatColor.RED + "You don't have any pending requests!");
-                    return true;
-                }
-                // tpauto already handles accepting automatically via the event,
-                // but if player manually types /tpaccept while tpauto is on,
-                // just accept directly without GUI.
-                boolean isAutoAccept = autoAccepting.remove(player.getUniqueId());
-                if (isAutoAccept || autoAccept.contains(player.getUniqueId()) || noConfirmGui.contains(player.getUniqueId())) {
+                // tpauto on or confirm GUIs off: accept directly
+                if (autoAccept.contains(player.getUniqueId()) || noConfirmGui.contains(player.getUniqueId())) {
                     player.performCommand("advancedteleport:tpaccept");
                 } else {
                     openAcceptConfirmFor(player, ChatColor.DARK_GRAY + "Accept request?");
@@ -171,7 +144,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             case "tpauto" -> {
                 if (autoAccept.contains(player.getUniqueId())) {
                     autoAccept.remove(player.getUniqueId());
-                    autoAccepting.remove(player.getUniqueId()); // clear pending auto-accept flag
                     sendActionBar(player, Component.text("You disabled tpauto", NamedTextColor.RED), 40L);
                 } else {
                     autoAccept.add(player.getUniqueId());
