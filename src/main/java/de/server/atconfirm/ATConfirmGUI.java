@@ -7,16 +7,10 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
-import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.event.player.PlayerCommandPreprocessEvent;
-import org.bukkit.event.player.PlayerTeleportEvent;
-import org.bukkit.event.player.PlayerMoveEvent;
-import io.papermc.paper.event.player.AsyncChatEvent;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
-import org.bukkit.Location;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -24,8 +18,13 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.player.PlayerCommandPreprocessEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -44,19 +43,22 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
     private NamespacedKey actionKey;
 
-    private final Set<UUID> autoAccept   = new HashSet<>();
-    private final Set<UUID> noConfirmGui = new HashSet<>();
-    private final Set<UUID> blockTpa     = new HashSet<>();
-    private final Set<UUID> blockTpahere = new HashSet<>();
-    private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
-    private final Map<UUID, BukkitTask> pendingStarts = new HashMap<>();
-    // Tracks last successful command use time (ms) per player per command name
-    private final Map<String, Long> lastCommandUse = new HashMap<>();
-    // AT cooldown in ms: warm-up-timer-duration(5) + cooldown-duration(5) = 10 seconds
-    private static final long COOLDOWN_MS = 10_000L;
+    // ---- Per-player settings (UUID present in set = feature ON) ----
+    private final Set<UUID> autoAccept   = new HashSet<>(); // tpauto
+    private final Set<UUID> noConfirmGui = new HashSet<>(); // skip confirm GUIs
+    private final Set<UUID> blockTpa     = new HashSet<>(); // refuse incoming tpa
+    private final Set<UUID> blockTpahere = new HashSet<>(); // refuse incoming tpahere
 
-    // Warmup duration — must match AT's warm-up-timer-duration in config.yml
+    // ---- Active visual countdown tasks ----
+    private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
+
+    // ---- Cooldown tracking (per player per command) ----
+    private final Map<String, Long> lastCommandUse = new HashMap<>();
+
+    // Warmup length in seconds — MUST equal AT's warm-up-timer-duration.
     private static final int WARMUP_SECONDS = 5;
+    // Cooldown (ms) to suppress duplicate countdowns for home/spawn/back/rtp.
+    private static final long COOLDOWN_MS = 10_000L;
 
     @Override
     public void onEnable() {
@@ -77,9 +79,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         HandlerList.unregisterAll((Listener) this);
     }
 
-    // ---------------------------------------------------------------------
-    //  Block TPA/TPAHere if disabled, auto-accept if tpauto on
-    // ---------------------------------------------------------------------
+    // =====================================================================
+    //  AT EVENTS
+    // =====================================================================
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onRequest(TeleportRequestEvent event) {
@@ -102,29 +104,75 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
         if (autoAccept.contains(receiver.getUniqueId())) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
-                if (receiver.isOnline()) {
-                    receiver.performCommand("advancedteleport:tpaccept");
-                }
+                if (receiver.isOnline()) receiver.performCommand("advancedteleport:tpaccept");
             }, 2L);
         }
     }
 
-    // ---------------------------------------------------------------------
-    //  Start action bar countdown when request is accepted
-    // ---------------------------------------------------------------------
-
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAccept(TeleportAcceptEvent event) {
         Player receiver = event.getReceivingPlayer();
-        if (receiver == null) return;
-        startActionBarCountdown(receiver);
+        Player sender   = event.getSendingPlayer();
+        boolean isHere = event.getRequestType() == TeleportRequestType.TPAHERE;
+        // TPA: sender travels (sender sees timer). TPAHERE: receiver travels.
+        Player whoTeleports = isHere ? receiver : sender;
+        if (whoTeleports == null) return;
+        startCountdown(whoTeleports);
     }
 
-    private void startActionBarCountdown(Player player) {
-        // Cancel any existing countdown for this player
-        cancelCountdown(player);
+    // =====================================================================
+    //  COMMAND PRE-PROCESS  (home / spawn / back — NOT rtp/tpr)
+    // =====================================================================
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPreprocess(PlayerCommandPreprocessEvent event) {
+        Player player = event.getPlayer();
+        String msg = event.getMessage().toLowerCase().trim();
+
+        String cmdName = null;
+        if (matches(msg, "home") || matches(msg, "advancedteleport:home")) {
+            cmdName = "home";
+        } else if (matches(msg, "spawn") || matches(msg, "advancedteleport:spawn")) {
+            cmdName = "spawn";
+        } else if (equalsCmd(msg, "back") || equalsCmd(msg, "advancedteleport:back")) {
+            cmdName = "back";
+        }
+        if (cmdName == null) return;
+
+        if (isOnCooldown(player, cmdName)) return;
+        markUsed(player, cmdName);
+
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (player.isOnline()) startCountdown(player);
+        }, 1L);
+    }
+
+    private boolean matches(String msg, String cmd) {
+        return msg.equals("/" + cmd) || msg.startsWith("/" + cmd + " ");
+    }
+
+    private boolean equalsCmd(String msg, String cmd) {
+        return msg.equals("/" + cmd);
+    }
+
+    private boolean isOnCooldown(Player player, String cmd) {
+        Long last = lastCommandUse.get(player.getUniqueId() + ":" + cmd);
+        return last != null && (System.currentTimeMillis() - last) < COOLDOWN_MS;
+    }
+
+    private void markUsed(Player player, String cmd) {
+        lastCommandUse.put(player.getUniqueId() + ":" + cmd, System.currentTimeMillis());
+    }
+
+    // =====================================================================
+    //  COUNTDOWN (re-sent every 2 ticks so AT cannot overwrite it)
+    // =====================================================================
+
+    private void startCountdown(Player player) {
+        cancelCountdownSilently(player);
 
         final int[] remaining = {WARMUP_SECONDS};
+        final int[] tick = {0};
 
         BukkitTask task = Bukkit.getScheduler().runTaskTimer(this, () -> {
             if (!player.isOnline()) {
@@ -132,153 +180,85 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 if (t != null) t.cancel();
                 return;
             }
-            if (remaining[0] > 0) {
-                // Action bar countdown
-                player.sendActionBar(Component.text(
-                        "⏱ Teleporting in " + remaining[0] + "s... do not move!",
-                        NamedTextColor.AQUA));
-                // Tick sound: soft hat each second, higher on last second
-                float pitch = remaining[0] == 1 ? 2.0f : 1.0f;
-                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, pitch);
-                remaining[0]--;
-            } else {
-                // Done — clear action bar
+
+            if (remaining[0] <= 0) {
                 player.sendActionBar(Component.empty());
                 BukkitTask t = activeCountdowns.remove(player.getUniqueId());
                 if (t != null) t.cancel();
+                return;
             }
-        }, 0L, 20L);
+
+            player.sendActionBar(Component.text(
+                    "\u23F1 Teleporting in " + remaining[0] + "s... do not move!",
+                    NamedTextColor.AQUA));
+
+            if (tick[0] % 20 == 0) {
+                float pitch = remaining[0] == 1 ? 2.0f : 1.0f;
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, pitch);
+                remaining[0]--;
+            }
+            tick[0]++;
+        }, 0L, 2L);
 
         activeCountdowns.put(player.getUniqueId(), task);
-    }
-
-    // ---------------------------------------------------------------------
-    //  Detect warmup start: AT sends a specific action bar during warmup
-    //  We hook into PlayerTeleportEvent to detect when AT actually teleports
-    //  and cancel our countdown at that point
-    // ---------------------------------------------------------------------
-
-    // We detect warmup by listening for the command and checking if AT
-    // starts its warmup via a scheduled task check
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onTeleport(PlayerTeleportEvent event) {
-        Player player = event.getPlayer();
-        // Teleport happened - cancel countdown (warmup done)
-        BukkitTask t = activeCountdowns.remove(player.getUniqueId());
-        if (t != null) {
-            t.cancel();
-            player.sendActionBar(Component.empty());
-        }
-        cancelPending(player);
-    }
-
-    // ---------------------------------------------------------------------
-    //  Start countdown for RTP / Home / Spawn / Back commands
-    // ---------------------------------------------------------------------
-
-    @EventHandler(priority = EventPriority.LOWEST)
-    public void onCommand(PlayerCommandPreprocessEvent event) {
-        Player player = event.getPlayer();
-        String msg = event.getMessage().toLowerCase().trim();
-        // Match /tpr, /rtp, /home, /spawn, /back and their namespaced forms
-        String cmdName = null;
-        if (msg.equals("/advancedteleport:tpr") || msg.startsWith("/advancedteleport:tpr ")
-                || msg.equals("/tpr") || msg.startsWith("/tpr ")) {
-            cmdName = "tpr";
-        } else if (msg.equals("/home") || msg.startsWith("/home ")
-                || msg.equals("/advancedteleport:home") || msg.startsWith("/advancedteleport:home ")) {
-            cmdName = "home";
-        } else if (msg.equals("/spawn") || msg.startsWith("/spawn ")
-                || msg.equals("/advancedteleport:spawn") || msg.startsWith("/advancedteleport:spawn ")) {
-            cmdName = "spawn";
-        } else if (msg.equals("/back") || msg.equals("/advancedteleport:back")) {
-            cmdName = "back";
-        }
-        if (cmdName != null) {
-            getLogger().info("[DEBUG] Command detected: " + cmdName + " for " + player.getName());
-            final String finalCmd = cmdName;
-            String key = player.getUniqueId() + ":" + finalCmd;
-            long now = System.currentTimeMillis();
-            Long last = lastCommandUse.get(key);
-            if (last != null && (now - last) < COOLDOWN_MS) return; // still on cooldown
-            lastCommandUse.put(key, now); // set timestamp immediately to block spam
-            Bukkit.getScheduler().runTaskLater(this, () -> {
-                if (player.isOnline()) schedulePendingCountdown(player, finalCmd);
-            }, 1L);
-        }
-    }
-
-    // Cancel pending countdown if AT sends an error/cooldown message
-    @EventHandler(priority = EventPriority.LOW)
-    public void onChat(AsyncChatEvent event) {
-        Player player = event.getPlayer();
-        if (!pendingStarts.containsKey(player.getUniqueId())) return;
-        String text = PlainTextComponentSerializer.plainText().serialize(event.message());
-        // AT uses prefix "↑ »" for its messages
-        if (text.contains("↑") || text.contains("Please wait") || text.contains("cooldown")) {
-            Bukkit.getScheduler().runTask(this, () -> cancelPending(player));
-        }
-    }
-
-    @EventHandler(ignoreCancelled = true)
-    public void onMove(PlayerMoveEvent event) {
-        Player player = event.getPlayer();
-        if (!activeCountdowns.containsKey(player.getUniqueId())) return;
-        Location from = event.getFrom();
-        Location to = event.getTo();
-        if (to == null) return;
-        if (from.getBlockX() == to.getBlockX()
-                && from.getBlockY() == to.getBlockY()
-                && from.getBlockZ() == to.getBlockZ()) return;
-        cancelCountdown(player);
-    }
-
-    @EventHandler(ignoreCancelled = true)
-    public void onDamage(EntityDamageEvent event) {
-        if (!(event.getEntity() instanceof Player player)) return;
-        cancelCountdown(player);
-    }
-
-    private void schedulePendingCountdown(Player player, String command) {
-        cancelPending(player);
-        long now = System.currentTimeMillis();
-        String key = player.getUniqueId() + ":" + command;
-        Long last = lastCommandUse.get(key);
-        if (last != null && (now - last) < COOLDOWN_MS) {
-            // Still on cooldown for this specific command - don't start countdown
-            return;
-        }
-        BukkitTask task = Bukkit.getScheduler().runTaskLater(this, () -> {
-            pendingStarts.remove(player.getUniqueId());
-            if (player.isOnline()) startActionBarCountdown(player);
-        }, 2L);
-        pendingStarts.put(player.getUniqueId(), task);
-    }
-
-    private void cancelPending(Player player) {
-        BukkitTask t = pendingStarts.remove(player.getUniqueId());
-        if (t != null) t.cancel();
     }
 
     private void cancelCountdown(Player player) {
         BukkitTask t = activeCountdowns.remove(player.getUniqueId());
         if (t != null) {
             t.cancel();
-            sendActionBar(player, Component.text("✗ Teleport cancelled!", NamedTextColor.RED), 40L);
+            sendActionBar(player, Component.text("\u2717 Teleport cancelled!", NamedTextColor.RED), 40L);
         }
     }
 
-    // ---------------------------------------------------------------------
-    //  Death: disable tpauto, cancel countdown
-    // ---------------------------------------------------------------------
+    private void cancelCountdownSilently(Player player) {
+        BukkitTask t = activeCountdowns.remove(player.getUniqueId());
+        if (t != null) t.cancel();
+    }
+
+    // =====================================================================
+    //  CANCEL TRIGGERS
+    // =====================================================================
+
+    @EventHandler(ignoreCancelled = true)
+    public void onMove(PlayerMoveEvent event) {
+        if (!activeCountdowns.containsKey(event.getPlayer().getUniqueId())) return;
+        Location from = event.getFrom();
+        Location to = event.getTo();
+        if (to == null) return;
+        if (from.getBlockX() == to.getBlockX()
+                && from.getBlockY() == to.getBlockY()
+                && from.getBlockZ() == to.getBlockZ()) return;
+        cancelCountdown(event.getPlayer());
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onDamage(EntityDamageEvent event) {
+        if (!(event.getEntity() instanceof Player player)) return;
+        if (activeCountdowns.containsKey(player.getUniqueId())) {
+            cancelCountdown(player);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onTeleport(PlayerTeleportEvent event) {
+        Player player = event.getPlayer();
+        BukkitTask t = activeCountdowns.remove(player.getUniqueId());
+        if (t != null) {
+            t.cancel();
+            player.sendActionBar(Component.empty());
+        }
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        cancelCountdownSilently(event.getPlayer());
+    }
 
     @EventHandler
     public void onDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
-        // Cancel countdown
-        BukkitTask t = activeCountdowns.remove(player.getUniqueId());
-        if (t != null) t.cancel();
-
+        cancelCountdownSilently(player);
         if (autoAccept.remove(player.getUniqueId())) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline())
@@ -287,9 +267,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         }
     }
 
-    // ---------------------------------------------------------------------
-    //  Commands
-    // ---------------------------------------------------------------------
+    // =====================================================================
+    //  COMMANDS
+    // =====================================================================
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -321,7 +301,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 if (autoAccept.contains(player.getUniqueId()) || noConfirmGui.contains(player.getUniqueId())) {
                     player.performCommand("advancedteleport:tpaccept");
                 } else {
-                    openAcceptConfirmFor(player, ChatColor.DARK_GRAY + "Accept request?");
+                    openAcceptConfirm(player);
                 }
                 return true;
             }
@@ -331,7 +311,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     sendActionBar(player, Component.text("You disabled tpauto", NamedTextColor.RED), 40L);
                 } else {
                     autoAccept.add(player.getUniqueId());
-                    sendActionBarPermanent(player, Component.text("✔ tpauto enabled", NamedTextColor.GREEN));
+                    sendActionBarPermanent(player, Component.text("\u2714 tpauto enabled", NamedTextColor.GREEN));
                 }
                 return true;
             }
@@ -343,9 +323,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         }
     }
 
-    // ---------------------------------------------------------------------
-    //  Settings GUI
-    // ---------------------------------------------------------------------
+    // =====================================================================
+    //  SETTINGS GUI
+    // =====================================================================
 
     private void openSettings(Player player) {
         Inventory inv = Bukkit.createInventory(player, 27, ChatColor.DARK_GRAY + "Teleport Settings");
@@ -391,14 +371,16 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         Bukkit.getScheduler().runTaskLater(this, () -> openSettings(player), 1L);
     }
 
-    // ---------------------------------------------------------------------
-    //  Action bar helpers
-    // ---------------------------------------------------------------------
+    // =====================================================================
+    //  ACTION BAR HELPERS
+    // =====================================================================
 
     private void sendActionBar(Player player, Component message, long durationTicks) {
         player.sendActionBar(message);
         Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (player.isOnline()) player.sendActionBar(Component.empty());
+            if (player.isOnline() && !activeCountdowns.containsKey(player.getUniqueId())) {
+                player.sendActionBar(Component.empty());
+            }
         }, durationTicks);
     }
 
@@ -407,16 +389,20 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         Bukkit.getScheduler().runTaskTimer(this, task -> {
             if (!player.isOnline() || !autoAccept.contains(player.getUniqueId())) {
                 task.cancel();
-                if (player.isOnline()) player.sendActionBar(Component.empty());
+                if (player.isOnline() && !activeCountdowns.containsKey(player.getUniqueId())) {
+                    player.sendActionBar(Component.empty());
+                }
                 return;
             }
-            player.sendActionBar(message);
+            if (!activeCountdowns.containsKey(player.getUniqueId())) {
+                player.sendActionBar(message);
+            }
         }, 40L, 40L);
     }
 
-    // ---------------------------------------------------------------------
-    //  Confirm GUIs
-    // ---------------------------------------------------------------------
+    // =====================================================================
+    //  CONFIRM GUIs
+    // =====================================================================
 
     private void openSendConfirm(Player player, String target, String baseCmd) {
         String pretty = baseCmd.equals("tpahere") ? "TPA-Here" : "TPA";
@@ -433,8 +419,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         player.openInventory(inv);
     }
 
-    private void openAcceptConfirmFor(Player player, String title) {
-        Inventory inv = Bukkit.createInventory(player, 27, title);
+    private void openAcceptConfirm(Player player) {
+        Inventory inv = Bukkit.createInventory(player, 27, ChatColor.DARK_GRAY + "Accept request?");
         inv.setItem(11, button(Material.LIME_STAINED_GLASS_PANE,
                 ChatColor.GREEN + "Accept",
                 List.of(ChatColor.GRAY + "Accept the teleport request."),
@@ -458,9 +444,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         return item;
     }
 
-    // ---------------------------------------------------------------------
-    //  Click handling
-    // ---------------------------------------------------------------------
+    // =====================================================================
+    //  CLICK HANDLING
+    // =====================================================================
 
     @EventHandler
     public void onClick(InventoryClickEvent event) {
@@ -486,7 +472,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     sendActionBar(player, Component.text("You disabled tpauto", NamedTextColor.RED), 40L);
                 } else {
                     autoAccept.add(id);
-                    sendActionBarPermanent(player, Component.text("✔ tpauto enabled", NamedTextColor.GREEN));
+                    sendActionBarPermanent(player, Component.text("\u2714 tpauto enabled", NamedTextColor.GREEN));
                 }
                 refreshSettings(player);
             }
@@ -507,9 +493,12 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     if (cmd.equalsIgnoreCase("[close]")) {
                         player.closeInventory();
                     } else if (cmd.equalsIgnoreCase("start_countdown")) {
-                        Bukkit.getScheduler().runTaskLater(ATConfirmGUI.this, () -> {
-                            if (player.isOnline()) startActionBarCountdown(player);
-                        }, 1L);
+                        if (!isOnCooldown(player, "rtp")) {
+                            markUsed(player, "rtp");
+                            Bukkit.getScheduler().runTaskLater(this, () -> {
+                                if (player.isOnline()) startCountdown(player);
+                            }, 1L);
+                        }
                     } else {
                         player.performCommand(cmd);
                     }
