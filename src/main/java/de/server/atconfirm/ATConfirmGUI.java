@@ -224,7 +224,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         Player target = isHere ? sender : receiver;
         if (whoTeleports == null) return;
         String dest = (target != null) ? target.getName() : null;
-        startCountdown(whoTeleports, dest);
+        // TPAHere = dark aqua, TPA = blue, so the two are visually distinct.
+        NamedTextColor color = isHere ? NamedTextColor.DARK_AQUA : NamedTextColor.BLUE;
+        startCountdown(whoTeleports, dest, color);
     }
 
     // =====================================================================
@@ -244,21 +246,23 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         ATTeleportEvent.TeleportType type = event.getType();
         if (type == null) return;
         final String destination;
+        final NamedTextColor color;
         switch (type) {
             case HOME -> {
                 // Use the actual home name AT is sending them to, if available.
                 String loc = event.getLocName();
                 destination = (loc != null && !loc.isEmpty()) ? "home \"" + loc + "\"" : "your home";
+                color = NamedTextColor.GREEN;
             }
-            case SPAWN -> destination = "spawn";
-            case BACK -> destination = "your previous location";
-            case TPR -> destination = "a random location";
+            case SPAWN -> { destination = "spawn"; color = NamedTextColor.YELLOW; }
+            case BACK -> { destination = "your previous location"; color = NamedTextColor.GOLD; }
+            case TPR -> { destination = "a random location"; color = NamedTextColor.LIGHT_PURPLE; }
             default -> { return; } // TPA/TPAHERE handled in onAccept; warps instant
         }
         // AT has accepted the teleport (cooldown passed). Start the visual
         // countdown on the next tick so it lines up with AT's warmup.
         Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (player.isOnline()) startCountdown(player, destination);
+            if (player.isOnline()) startCountdown(player, destination, color);
         }, 1L);
     }
 
@@ -267,7 +271,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     // =====================================================================
 
     private void startCountdown(Player player) {
-        startCountdown(player, null);
+        startCountdown(player, null, NamedTextColor.AQUA);
+    }
+
+    private void startCountdown(Player player, String destination) {
+        startCountdown(player, destination, NamedTextColor.AQUA);
     }
 
     /**
@@ -275,8 +283,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
      *
      * @param destination a short phrase like "spawn", "your home" or "a random
      *                    location"; if null a generic message is shown.
+     * @param color       the colour of the countdown text (per teleport type).
      */
-    private void startCountdown(Player player, String destination) {
+    private void startCountdown(Player player, String destination, NamedTextColor color) {
         cancelCountdownSilently(player);
 
         // Build the message prefix once. With a destination we say e.g.
@@ -324,7 +333,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             // can't overwrite it, but only play the sound when the second changes.
             player.sendActionBar(Component.text(
                     prefix + secondsLeft + "s... do not move!",
-                    NamedTextColor.AQUA));
+                    color));
 
             if (secondsLeft != lastShown[0]) {
                 lastShown[0] = secondsLeft;
@@ -517,7 +526,16 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 return true;
             }
             case "homes" -> {
-                openHomesGui(player);
+                if (args.length == 0) {
+                    // No arguments: open our own homes GUI for the player.
+                    openHomesGui(player);
+                } else {
+                    // Arguments present (e.g. /homes <player>): this is AT's
+                    // "view another player's homes" feature - hand it to AT.
+                    StringBuilder sb = new StringBuilder("advancedteleport:homes");
+                    for (String a : args) sb.append(' ').append(a);
+                    player.performCommand(sb.toString());
+                }
                 return true;
             }
             default -> { return false; }
