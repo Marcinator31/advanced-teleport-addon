@@ -4,6 +4,7 @@ import com.google.common.collect.ImmutableMap;
 import io.github.niestrat99.advancedteleport.api.ATPlayer;
 import io.github.niestrat99.advancedteleport.api.Home;
 import io.github.niestrat99.advancedteleport.api.TeleportRequestType;
+import io.github.niestrat99.advancedteleport.api.events.ATTeleportEvent;
 import io.github.niestrat99.advancedteleport.api.events.players.TeleportAcceptEvent;
 import io.github.niestrat99.advancedteleport.api.events.players.TeleportRequestEvent;
 import net.kyori.adventure.text.Component;
@@ -25,7 +26,6 @@ import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.ClickType;
-import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
@@ -59,17 +59,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
     // ---- Per-player tpauto action-bar refresher (so toggling can't stack tasks) ----
     private final Map<UUID, BukkitTask> autoBarTasks = new HashMap<>();
-    // Remembers which cooldown key a player's active countdown belongs to, so a
-    // cancelled teleport can clear that cooldown and allow an immediate retry.
-    private final Map<UUID, String> countdownCooldownKey = new HashMap<>();
 
-    // ---- Cooldown tracking (per player per command) ----
-    private final Map<String, Long> lastCommandUse = new HashMap<>();
 
     // Loaded from config.yml (defaults: warmup 5s). MUST match AT's
     // warm-up-timer-duration so the visual lines up with the real teleport.
     private int warmupSeconds = 5;
-    private long cooldownMs = 10_000L;
     private boolean blockInCombat = true;
 
     // CombatLogX integration via reflection (no hard dependency).
@@ -112,7 +106,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         actionKey = new NamespacedKey(this, "action");
         saveDefaultConfig();
         warmupSeconds = Math.max(1, getConfig().getInt("warmup-seconds", 5));
-        cooldownMs = Math.max(0L, getConfig().getLong("cooldown-seconds", 10)) * 1000L;
         blockInCombat = getConfig().getBoolean("block-teleport-in-combat", true);
         setupCombatLogX();
         Bukkit.getPluginManager().registerEvents(this, this);
@@ -230,49 +223,31 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     }
 
     // =====================================================================
-    //  COMMAND PRE-PROCESS  (home / spawn / back — NOT rtp/tpr)
+    //  AT TELEPORT EVENT  (fires only when AT actually starts a teleport, i.e.
+    //  AFTER its own cooldown/permission checks pass). This is the reliable
+    //  trigger for the warmup countdown - no more guessing in preprocess, so a
+    //  command rejected by AT's cooldown no longer shows a phantom timer.
     // =====================================================================
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onPreprocess(PlayerCommandPreprocessEvent event) {
+    public void onATTeleport(ATTeleportEvent event) {
         Player player = event.getPlayer();
-        String msg = event.getMessage().toLowerCase().trim();
+        if (player == null) return;
 
-        String cmdName = null;
-        if (matches(msg, "home") || matches(msg, "advancedteleport:home")) {
-            cmdName = "home";
-        } else if (matches(msg, "spawn") || matches(msg, "advancedteleport:spawn")) {
-            cmdName = "spawn";
-        } else if (equalsCmd(msg, "back") || equalsCmd(msg, "advancedteleport:back")) {
-            cmdName = "back";
+        // Only show our countdown for the "move yourself" teleport types.
+        // TPA/TPAHERE are already handled by onAccept; warps are instant.
+        ATTeleportEvent.TeleportType type = event.getType();
+        if (type == null) return;
+        switch (type) {
+            case HOME, SPAWN, BACK, TPR -> {
+                // AT has accepted the teleport (cooldown passed). Start the visual
+                // countdown on the next tick so it lines up with AT's warmup.
+                Bukkit.getScheduler().runTaskLater(this, () -> {
+                    if (player.isOnline()) startCountdown(player);
+                }, 1L);
+            }
+            default -> { /* TPA/TPAHERE/WARP/etc handled elsewhere or no countdown */ }
         }
-        if (cmdName == null) return;
-
-        if (deniedByCombat(player)) { event.setCancelled(true); return; }
-        if (isOnCooldown(player, cmdName)) return;
-        markUsed(player, cmdName);
-
-        final String cdKey = player.getUniqueId() + ":" + cmdName;
-        Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (player.isOnline()) startCountdown(player, cdKey);
-        }, 1L);
-    }
-
-    private boolean matches(String msg, String cmd) {
-        return msg.equals("/" + cmd) || msg.startsWith("/" + cmd + " ");
-    }
-
-    private boolean equalsCmd(String msg, String cmd) {
-        return msg.equals("/" + cmd);
-    }
-
-    private boolean isOnCooldown(Player player, String cmd) {
-        Long last = lastCommandUse.get(player.getUniqueId() + ":" + cmd);
-        return last != null && (System.currentTimeMillis() - last) < cooldownMs;
-    }
-
-    private void markUsed(Player player, String cmd) {
-        lastCommandUse.put(player.getUniqueId() + ":" + cmd, System.currentTimeMillis());
     }
 
     // =====================================================================
@@ -280,16 +255,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     // =====================================================================
 
     private void startCountdown(Player player) {
-        startCountdown(player, null);
-    }
-
-    private void startCountdown(Player player, String cooldownKey) {
         cancelCountdownSilently(player);
-        if (cooldownKey != null) {
-            countdownCooldownKey.put(player.getUniqueId(), cooldownKey);
-        } else {
-            countdownCooldownKey.remove(player.getUniqueId());
-        }
 
         // Drive the countdown by REAL wall-clock time, not by counting ticks.
         // Counting ticks drifts under server lag (20 ticks != 1s when TPS drops),
@@ -346,11 +312,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         BukkitTask t = activeCountdowns.remove(player.getUniqueId());
         if (t != null) {
             t.cancel();
-            // The teleport was aborted, so AT will NOT put the command on cooldown.
-            // Clear our matching cooldown entry too, otherwise the next attempt
-            // would teleport with no countdown/sound.
-            String key = countdownCooldownKey.remove(player.getUniqueId());
-            if (key != null) lastCommandUse.remove(key);
             sendActionBar(player, Component.text("\u2717 Teleport cancelled!", NamedTextColor.RED), 40L);
         }
     }
@@ -358,7 +319,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private void cancelCountdownSilently(Player player) {
         BukkitTask t = activeCountdowns.remove(player.getUniqueId());
         if (t != null) t.cancel();
-        countdownCooldownKey.remove(player.getUniqueId());
     }
 
     // =====================================================================
@@ -393,9 +353,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             t.cancel();
             player.sendActionBar(Component.empty());
         }
-        // Teleport succeeded; keep the cooldown entry (mirrors AT's own cooldown)
-        // but stop tracking the key.
-        countdownCooldownKey.remove(player.getUniqueId());
     }
 
     @EventHandler
@@ -403,7 +360,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         Player player = event.getPlayer();
         cancelCountdownSilently(player);
         stopAutoBar(player);
-        lastCommandUse.keySet().removeIf(k -> k.startsWith(player.getUniqueId().toString() + ":"));
     }
 
     @EventHandler
@@ -789,15 +745,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             } else {
                 player.closeInventory();
                 if (deniedByCombat(player)) return;
-                // Cooldown shared with /home so spamming can't double-fire.
-                if (!isOnCooldown(player, "home")) {
-                    markUsed(player, "home");
-                    player.performCommand("advancedteleport:home " + name);
-                    final String cdKey = player.getUniqueId() + ":home";
-                    Bukkit.getScheduler().runTaskLater(this, () -> {
-                        if (player.isOnline()) startCountdown(player, cdKey);
-                    }, 1L);
-                }
+                // Just run AT's home command. If AT accepts it (cooldown/permission
+                // OK), it fires ATTeleportEvent and our listener starts the timer.
+                player.performCommand("advancedteleport:home " + name);
             }
             return;
         }
@@ -884,14 +834,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             if (cmd.equalsIgnoreCase("[close]")) {
                 player.closeInventory();
             } else if (cmd.equalsIgnoreCase("start_countdown")) {
+                // No-op now: the countdown is started by ATTeleportEvent (type TPR)
+                // when AT actually begins the random teleport. We only guard combat.
                 if (deniedByCombat(player)) { player.closeInventory(); return; }
-                if (!isOnCooldown(player, "rtp")) {
-                    markUsed(player, "rtp");
-                    final String cdKey = player.getUniqueId() + ":rtp";
-                    Bukkit.getScheduler().runTaskLater(this, () -> {
-                        if (player.isOnline()) startCountdown(player, cdKey);
-                    }, 1L);
-                }
             } else {
                 player.performCommand(cmd);
             }
