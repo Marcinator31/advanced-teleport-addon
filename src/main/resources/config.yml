@@ -1,0 +1,16 @@
+# ATConfirmGUI configuration
+
+# Length of the teleport warmup countdown shown over the hotbar, in seconds.
+# IMPORTANT: set this to the SAME value as AdvancedTeleport's
+# warm-up-timer-duration so the visual matches the real teleport.
+warmup-seconds: 5
+
+# How long (seconds) before the same command can start another countdown.
+# Should be >= warmup + AT's per-command cooldown to avoid double timers.
+cooldown-seconds: 10
+
+# Block all teleports (tpa, tpahere, tpaccept, home, spawn, back, rtp) while the
+# player is combat-tagged by CombatLogX. Requires the CombatLogX plugin; if it
+# isn't installed this option simply does nothing. Set to false to allow
+# teleporting during combat.
+block-teleport-in-combat: true
