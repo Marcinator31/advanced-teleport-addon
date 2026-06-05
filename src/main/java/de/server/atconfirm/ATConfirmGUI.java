@@ -26,6 +26,7 @@ import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.ClickType;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
@@ -59,6 +60,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private final Map<UUID, BukkitTask> activeCountdowns = new HashMap<>();
     // ---- Per-player tpauto action-bar refresher (so toggling can't stack tasks) ----
     private final Map<UUID, BukkitTask> autoBarTasks = new HashMap<>();
+    // ---- Players we're waiting on to type a home name in chat ----
+    private final Set<UUID> awaitingHomeName = new HashSet<>();
 
 
     // Loaded from config.yml (defaults: warmup 5s). MUST match AT's
@@ -218,8 +221,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         Player sender   = event.getSendingPlayer();
         boolean isHere = event.getRequestType() == TeleportRequestType.TPAHERE;
         Player whoTeleports = isHere ? receiver : sender;
+        Player target = isHere ? sender : receiver;
         if (whoTeleports == null) return;
-        startCountdown(whoTeleports);
+        String dest = (target != null) ? target.getName() : null;
+        startCountdown(whoTeleports, dest);
     }
 
     // =====================================================================
@@ -238,16 +243,23 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         // TPA/TPAHERE are already handled by onAccept; warps are instant.
         ATTeleportEvent.TeleportType type = event.getType();
         if (type == null) return;
+        final String destination;
         switch (type) {
-            case HOME, SPAWN, BACK, TPR -> {
-                // AT has accepted the teleport (cooldown passed). Start the visual
-                // countdown on the next tick so it lines up with AT's warmup.
-                Bukkit.getScheduler().runTaskLater(this, () -> {
-                    if (player.isOnline()) startCountdown(player);
-                }, 1L);
+            case HOME -> {
+                // Use the actual home name AT is sending them to, if available.
+                String loc = event.getLocName();
+                destination = (loc != null && !loc.isEmpty()) ? "home \"" + loc + "\"" : "your home";
             }
-            default -> { /* TPA/TPAHERE/WARP/etc handled elsewhere or no countdown */ }
+            case SPAWN -> destination = "spawn";
+            case BACK -> destination = "your previous location";
+            case TPR -> destination = "a random location";
+            default -> { return; } // TPA/TPAHERE handled in onAccept; warps instant
         }
+        // AT has accepted the teleport (cooldown passed). Start the visual
+        // countdown on the next tick so it lines up with AT's warmup.
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (player.isOnline()) startCountdown(player, destination);
+        }, 1L);
     }
 
     // =====================================================================
@@ -255,7 +267,23 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     // =====================================================================
 
     private void startCountdown(Player player) {
+        startCountdown(player, null);
+    }
+
+    /**
+     * Starts the warmup countdown over the hotbar.
+     *
+     * @param destination a short phrase like "spawn", "your home" or "a random
+     *                    location"; if null a generic message is shown.
+     */
+    private void startCountdown(Player player, String destination) {
         cancelCountdownSilently(player);
+
+        // Build the message prefix once. With a destination we say e.g.
+        // "Teleporting to spawn in 5s...", otherwise the generic line.
+        final String prefix = (destination == null || destination.isEmpty())
+                ? "\u23F1 Teleporting in "
+                : "\u23F1 Teleporting to " + destination + " in ";
 
         // Drive the countdown by REAL wall-clock time, not by counting ticks.
         // Counting ticks drifts under server lag (20 ticks != 1s when TPS drops),
@@ -295,7 +323,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             // Refresh the action bar every run (every 2 ticks) so AT/other plugins
             // can't overwrite it, but only play the sound when the second changes.
             player.sendActionBar(Component.text(
-                    "\u23F1 Teleporting in " + secondsLeft + "s... do not move!",
+                    prefix + secondsLeft + "s... do not move!",
                     NamedTextColor.AQUA));
 
             if (secondsLeft != lastShown[0]) {
@@ -360,6 +388,59 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         Player player = event.getPlayer();
         cancelCountdownSilently(player);
         stopAutoBar(player);
+        awaitingHomeName.remove(player.getUniqueId());
+    }
+
+    // =====================================================================
+    //  HOME-NAME CHAT INPUT  (player typed a name after clicking an empty slot)
+    // =====================================================================
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onChatName(AsyncPlayerChatEvent event) {
+        Player player = event.getPlayer();
+        if (!awaitingHomeName.contains(player.getUniqueId())) return;
+
+        // This message is for us, not public chat.
+        event.setCancelled(true);
+        awaitingHomeName.remove(player.getUniqueId());
+
+        String raw = event.getMessage().trim();
+
+        if (raw.equalsIgnoreCase("cancel")) {
+            player.sendMessage("\u00a77" + "Home creation cancelled.");
+            return;
+        }
+
+        // AT home names are alphanumeric. Sanitise and validate.
+        final String name = raw.replaceAll("\\s+", "_");
+        if (!name.matches("[A-Za-z0-9_]{1,32}")) {
+            player.sendMessage("\u00a7c" + "Invalid name. Use only letters, numbers and underscores (max 32).");
+            return;
+        }
+
+        // Hop back onto the main thread for all Bukkit/AT calls.
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (!player.isOnline()) return;
+            ATPlayer atp = ATPlayer.getPlayer(player);
+            if (atp == null) {
+                player.sendMessage("\u00a7c" + "Your player data isn't loaded, try again.");
+                return;
+            }
+            if (atp.hasHome(name)) {
+                player.sendMessage("\u00a7c" + "You already have a home called \"" + name + "\".");
+                return;
+            }
+            if (!atp.canSetMoreHomes()) {
+                player.sendMessage("\u00a7c" + "You can't set any more homes.");
+                return;
+            }
+            atp.addHome(name, player.getLocation(), player);
+            player.sendMessage("\u00a7a" + "Home \"" + name + "\" set at your location.");
+            // Reopen the homes GUI so they see the new home.
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (player.isOnline()) openHomesGui(player);
+            }, 5L);
+        });
     }
 
     @EventHandler
@@ -500,10 +581,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 inv.setItem(slot, button(Material.LIGHT_GRAY_STAINED_GLASS_PANE,
                         "\u00a7b" + "Empty home slot",
                         List.of(
-                                "\u00a77" + "You can set a home here.",
+                                "\u00a77" + "Set a home at your location",
+                                "\u00a77" + "and give it your own name.",
                                 "",
-                                "\u00a7e" + "Click " + "\u00a77" + "to set a home"
-                                        + "\u00a78" + " at your location"),
+                                "\u00a7e" + "Click " + "\u00a77" + "to choose a name"),
                         "home_set"));
             } else {
                 // Locked slot (beyond this player's limit)
@@ -530,20 +611,6 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         inv.setItem(26, button(Material.BOOK, "\u00a7b" + "Homes", infoLore, "noop"));
 
         player.openInventory(inv);
-    }
-
-    /** Auto-generate the next free home name: home1, home2, ... within the cap. */
-    private String nextHomeName(ATPlayer atp) {
-        ImmutableMap<String, Home> homes = atp.getHomes();
-        Set<String> existing = new HashSet<>();
-        if (homes != null) {
-            for (String k : homes.keySet()) existing.add(k.toLowerCase());
-        }
-        for (int i = 1; i <= MAX_HOME_SLOTS; i++) {
-            String candidate = "home" + i;
-            if (!existing.contains(candidate)) return candidate;
-        }
-        return null;
     }
 
     private void openDeleteConfirm(Player player, String homeName) {
@@ -759,17 +826,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 player.closeInventory();
                 return;
             }
-            String name = nextHomeName(atp);
-            if (name == null) {
-                player.sendMessage("\u00a7c" + "All home slots are in use.");
-                return;
-            }
-            atp.addHome(name, player.getLocation(), player);
-            player.sendMessage("\u00a7a" + "Home \"" + name + "\" set at your location.");
-            // Refresh the GUI after AT stores the home.
-            Bukkit.getScheduler().runTaskLater(this, () -> {
-                if (player.isOnline() && hasOurGuiOpen(player)) openHomesGui(player);
-            }, 10L);
+            // Ask the player to type a name in chat. We capture the next message.
+            awaitingHomeName.add(player.getUniqueId());
+            player.closeInventory();
+            player.sendMessage("\u00a7e" + "Type a name for your new home in chat.");
+            player.sendMessage("\u00a77" + "Type \u00a7fcancel\u00a77 to abort.");
             return;
         }
         if (action.equals("home_back")) {
