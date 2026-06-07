@@ -80,6 +80,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private boolean cancelOnMovement = true;
     // Server-wide RTP lock toggled by ops via /rtplock. Persisted in config.yml.
     private boolean rtpLocked = false;
+    // Server-wide /back lock toggled by ops via /backlock. Persisted in config.yml.
+    private boolean backLocked = false;
 
     // CombatLogX integration via reflection (no hard dependency).
     private Object combatLogXPlugin;       // ICombatLogX instance
@@ -123,6 +125,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         warmupSeconds = Math.max(1, getConfig().getInt("warmup-seconds", 5));
         blockInCombat = getConfig().getBoolean("block-teleport-in-combat", true);
         rtpLocked = getConfig().getBoolean("rtp-locked", false);
+        backLocked = getConfig().getBoolean("back-locked", false);
         // Automatically match AT's warm-up-timer-duration if we can read it, so the
         // countdown always lines up with the real teleport without the server owner
         // keeping two values in sync. Our own config value is just a fallback.
@@ -632,7 +635,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         // Only intercept the labels we actually handle.
         switch (label) {
             case "tpa", "tpahere", "tpaccept", "tpauto", "tpsettings", "settings",
-                 "rtp", "tpr", "menu", "tpmenu", "homes", "rtplock" -> {
+                 "rtp", "tpr", "menu", "tpmenu", "homes", "rtplock", "back", "backlock" -> {
                 String[] args = new String[parts.length - 1];
                 System.arraycopy(parts, 1, args, 0, args.length);
 
@@ -892,6 +895,20 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 openRtpLockGui(player);
                 return true;
             }
+            case "backlock" -> {
+                if (!player.isOp() && !player.hasPermission("atconfirmgui.backlock")) {
+                    player.sendMessage("\u00a7c" + "You don't have permission to do that.");
+                    return true;
+                }
+                openBackLockGui(player);
+                return true;
+            }
+            case "back" -> {
+                if (backBlockedFor(player)) return true;
+                if (deniedByCombat(player)) return true;
+                player.performCommand("advancedteleport:back");
+                return true;
+            }
             default -> { return false; }
         }
     }
@@ -1130,6 +1147,36 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     List.of("\u00a77" + "Players can use /rtp.",
                             "", "\u00a7e" + "Click " + "\u00a77" + "to lock"),
                     "rtplock_toggle"));
+        }
+        player.openInventory(inv);
+    }
+
+    /**
+     * Returns true (and shows a hotbar message) if /back is locked and the player
+     * is not allowed to bypass it. Ops / permission holders are never blocked.
+     */
+    private boolean backBlockedFor(Player player) {
+        if (!backLocked) return false;
+        if (player.isOp() || player.hasPermission("atconfirmgui.backlock")) return false;
+        sendActionBar(player, Component.text("\u2717 Back is blocked", NamedTextColor.RED), 60L);
+        return true;
+    }
+
+    private void openBackLockGui(Player player) {
+        Inventory inv = createGui(player, 27, "\u00a78" + "Back Lock");
+        // Green pane = /back enabled, red pane = /back locked. Clicking toggles.
+        if (backLocked) {
+            inv.setItem(13, button(Material.RED_STAINED_GLASS_PANE,
+                    "\u00a7c\u00a7l" + "Back is LOCKED",
+                    List.of("\u00a77" + "Players cannot use /back.",
+                            "", "\u00a7e" + "Click " + "\u00a77" + "to unlock"),
+                    "backlock_toggle"));
+        } else {
+            inv.setItem(13, button(Material.LIME_STAINED_GLASS_PANE,
+                    "\u00a7a\u00a7l" + "Back is ENABLED",
+                    List.of("\u00a77" + "Players can use /back.",
+                            "", "\u00a7e" + "Click " + "\u00a77" + "to lock"),
+                    "backlock_toggle"));
         }
         player.openInventory(inv);
     }
@@ -1395,6 +1442,21 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             return;
         }
 
+        if (action.equals("backlock_toggle")) {
+            if (!player.isOp() && !player.hasPermission("atconfirmgui.backlock")) {
+                player.closeInventory();
+                return;
+            }
+            backLocked = !backLocked;
+            getConfig().set("back-locked", backLocked);
+            saveConfig();
+            player.sendMessage(backLocked
+                    ? "\u00a7c" + "Back is now LOCKED for all players."
+                    : "\u00a7a" + "Back is now ENABLED for all players.");
+            openBackLockGui(player); // refresh the pane
+            return;
+        }
+
         // ---- Main menu buttons ----
         switch (action) {
             case "menu_homes" -> { openHomesGui(player); return; }
@@ -1408,6 +1470,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             }
             case "menu_back" -> {
                 player.closeInventory();
+                if (backBlockedFor(player)) return;
                 if (deniedByCombat(player)) return;
                 player.performCommand("advancedteleport:back");
                 return;
