@@ -1382,7 +1382,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                             "\u00a77" + "Teleport to the AFK area.",
                             "",
                             "\u00a7e" + "Click " + "\u00a77" + "to teleport"),
-                    "warp_tp:afk"));
+                    "afk_tp"));
         } else {
             inv.setItem(13, button(Material.BARRIER,
                     "\u00a7c\u00a7l" + "No AFK area set",
@@ -1690,6 +1690,14 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             if (warpBlockedFor(player)) return;
             if (deniedByCombat(player)) return;
             player.performCommand("advancedteleport:warp " + name);
+            return;
+        }
+        if (action.equals("afk_tp")) {
+            // The AFK warp deliberately ignores the warp lock, so /afk keeps
+            // working even when warps are locked. Combat is still respected.
+            player.closeInventory();
+            if (deniedByCombat(player)) return;
+            player.performCommand("advancedteleport:warp afk");
             return;
         }
 
