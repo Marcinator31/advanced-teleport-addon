@@ -142,6 +142,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         loadPlayerSettings();
         setupCombatLogX();
         Bukkit.getPluginManager().registerEvents(this, this);
+        // If /afk is enabled, register it at runtime so it shows up in tab-complete.
+        // We do this dynamically (instead of in plugin.yml) so that when it's
+        // disabled the command isn't registered at all and can't clash with other
+        // AFK plugins.
+        if (afkCommandEnabled) registerAfkCommand();
         // Auto-configure AT's messages so our hotbar countdown + confirm GUIs work
         // without the server owner editing any files (plug & play for Modrinth).
         Bukkit.getScheduler().runTaskLater(this, this::autoConfigureAdvancedTeleport, 20L);
@@ -227,6 +232,33 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
      * uses it as our countdown length, so the visual always matches AT's real
      * warmup. Falls back to our own config value if AT's can't be read.
      */
+    /**
+     * Registers /afk at runtime via the server CommandMap so it appears in
+     * tab-completion. Only called when afk-command-enabled is true. Uses
+     * reflection so we don't hard-depend on Paper's CommandMap accessor.
+     */
+    private void registerAfkCommand() {
+        try {
+            Method getCommandMap = Bukkit.getServer().getClass().getMethod("getCommandMap");
+            Object commandMap = getCommandMap.invoke(Bukkit.getServer());
+            org.bukkit.command.Command cmd = new org.bukkit.command.Command("afk") {
+                @Override
+                public boolean execute(org.bukkit.command.CommandSender sender, String label, String[] args) {
+                    if (sender instanceof Player p) {
+                        handleCommand(p, "afk", args);
+                    }
+                    return true;
+                }
+            };
+            cmd.setDescription("Open the AFK teleport menu.");
+            Method register = commandMap.getClass().getMethod("register", String.class, org.bukkit.command.Command.class);
+            register.invoke(commandMap, "atconfirmgui", cmd);
+            getLogger().info("Registered /afk command.");
+        } catch (Throwable t) {
+            getLogger().warning("Could not register /afk command: " + t.getMessage());
+        }
+    }
+
     private void syncWarmupFromAdvancedTeleport() {
         try {
             org.bukkit.plugin.Plugin at = Bukkit.getPluginManager().getPlugin("AdvancedTeleport");
@@ -457,7 +489,12 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             case SPAWN -> { destination = "spawn"; color = NamedTextColor.YELLOW; }
             case BACK -> { destination = "your previous location"; color = NamedTextColor.GOLD; }
             case TPR -> { destination = "a random location"; color = NamedTextColor.LIGHT_PURPLE; }
-            default -> { return; } // TPA/TPAHERE handled in onAccept; warps instant
+            case WARP -> {
+                String loc = event.getLocName();
+                destination = (loc != null && !loc.isEmpty()) ? "warp \"" + loc + "\"" : "a warp";
+                color = NamedTextColor.AQUA;
+            }
+            default -> { return; } // TPA/TPAHERE handled in onAccept
         }
         // AT has accepted the teleport (cooldown passed). Start the visual
         // countdown on the next tick so it lines up with AT's warmup.
