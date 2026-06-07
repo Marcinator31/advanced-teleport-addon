@@ -52,7 +52,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public final class ATConfirmGUI extends JavaPlugin implements Listener {
+public final class ATAddon extends JavaPlugin implements Listener {
 
     private NamespacedKey actionKey;
 
@@ -123,7 +123,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     @Override
     public void onEnable() {
         if (Bukkit.getPluginManager().getPlugin("AdvancedTeleport") == null) {
-            getLogger().severe("AdvancedTeleport not found! Disabling ATConfirmGUI.");
+            getLogger().severe("AdvancedTeleport not found! Disabling ATAddon.");
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
@@ -150,7 +150,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         // Auto-configure AT's messages so our hotbar countdown + confirm GUIs work
         // without the server owner editing any files (plug & play for Modrinth).
         Bukkit.getScheduler().runTaskLater(this, this::autoConfigureAdvancedTeleport, 20L);
-        getLogger().info("ATConfirmGUI enabled.");
+        getLogger().info("ATAddon enabled.");
     }
 
     @Override
@@ -252,7 +252,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             };
             cmd.setDescription("Open the AFK teleport menu.");
             Method register = commandMap.getClass().getMethod("register", String.class, org.bukkit.command.Command.class);
-            register.invoke(commandMap, "atconfirmgui", cmd);
+            register.invoke(commandMap, "ataddon", cmd);
             getLogger().info("Registered /afk command.");
         } catch (Throwable t) {
             getLogger().warning("Could not register /afk command: " + t.getMessage());
@@ -347,7 +347,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
             if (changed) {
                 cfg.save(messages);
-                getLogger().info("Adjusted AdvancedTeleport custom-messages.yml for ATConfirmGUI.");
+                getLogger().info("Adjusted AdvancedTeleport custom-messages.yml for ATAddon.");
                 // Reload AT so the changes take effect immediately.
                 Bukkit.getScheduler().runTaskLater(this, () ->
                         Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "advancedteleport:at reload"), 20L);
@@ -940,7 +940,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 return true;
             }
             case "rtplock" -> {
-                if (!player.isOp() && !player.hasPermission("atconfirmgui.rtplock")) {
+                if (!player.isOp() && !player.hasPermission("ataddon.rtplock")) {
                     player.sendMessage("\u00a7c" + "You don't have permission to do that.");
                     return true;
                 }
@@ -948,7 +948,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 return true;
             }
             case "backlock" -> {
-                if (!player.isOp() && !player.hasPermission("atconfirmgui.backlock")) {
+                if (!player.isOp() && !player.hasPermission("ataddon.backlock")) {
                     player.sendMessage("\u00a7c" + "You don't have permission to do that.");
                     return true;
                 }
@@ -973,7 +973,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 return true;
             }
             case "warplock" -> {
-                if (!player.isOp() && !player.hasPermission("atconfirmgui.warplock")) {
+                if (!player.isOp() && !player.hasPermission("ataddon.warplock")) {
                     player.sendMessage("\u00a7c" + "You don't have permission to do that.");
                     return true;
                 }
@@ -1013,7 +1013,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 "menu_homes"));
 
         // RTP - show as locked (red) for players who can't bypass the lock.
-        boolean rtpBlocked = rtpLocked && !(player.isOp() || player.hasPermission("atconfirmgui.rtplock"));
+        boolean rtpBlocked = rtpLocked && !(player.isOp() || player.hasPermission("ataddon.rtplock"));
         if (rtpBlocked) {
             inv.setItem(11, button(Material.RED_STAINED_GLASS_PANE,
                     "\u00a7c\u00a7l" + "Random Teleport",
@@ -1032,7 +1032,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 "menu_spawn"));
 
         // Back - show as locked (red) for players who can't bypass the lock.
-        boolean backBlocked = backLocked && !(player.isOp() || player.hasPermission("atconfirmgui.backlock"));
+        boolean backBlocked = backLocked && !(player.isOp() || player.hasPermission("ataddon.backlock"));
         if (backBlocked) {
             inv.setItem(13, button(Material.RED_STAINED_GLASS_PANE,
                     "\u00a7c\u00a7l" + "Back",
@@ -1062,6 +1062,14 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 List.of("\u00a77" + "Auto-accept incoming", "\u00a77" + "teleport requests.",
                         "", "\u00a7e" + "Click " + "\u00a77" + "to toggle."),
                 "menu_tpauto"));
+
+        // AFK button - only shown if the /afk feature is enabled in the config.
+        if (afkCommandEnabled) {
+            inv.setItem(22, button(Material.GRASS_BLOCK,
+                    "\u00a7a\u00a7l" + "AFK",
+                    List.of("\u00a77" + "Teleport to the AFK area."),
+                    "menu_afk"));
+        }
 
         player.openInventory(inv);
     }
@@ -1234,7 +1242,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
      */
     private boolean rtpBlockedFor(Player player) {
         if (!rtpLocked) return false;
-        if (player.isOp() || player.hasPermission("atconfirmgui.rtplock")) return false;
+        if (player.isOp() || player.hasPermission("ataddon.rtplock")) return false;
         sendActionBar(player, Component.text("\u2717 RTP is blocked", NamedTextColor.RED), 60L);
         return true;
     }
@@ -1264,7 +1272,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
      */
     private boolean backBlockedFor(Player player) {
         if (!backLocked) return false;
-        if (player.isOp() || player.hasPermission("atconfirmgui.backlock")) return false;
+        if (player.isOp() || player.hasPermission("ataddon.backlock")) return false;
         sendActionBar(player, Component.text("\u2717 Back is blocked", NamedTextColor.RED), 60L);
         return true;
     }
@@ -1290,7 +1298,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
     private boolean warpBlockedFor(Player player) {
         if (!warpLocked) return false;
-        if (player.isOp() || player.hasPermission("atconfirmgui.warplock")) return false;
+        if (player.isOp() || player.hasPermission("ataddon.warplock")) return false;
         sendActionBar(player, Component.text("\u2717 Warps are blocked", NamedTextColor.RED), 60L);
         return true;
     }
@@ -1640,7 +1648,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         }
 
         if (action.equals("rtplock_toggle")) {
-            if (!player.isOp() && !player.hasPermission("atconfirmgui.rtplock")) {
+            if (!player.isOp() && !player.hasPermission("ataddon.rtplock")) {
                 player.closeInventory();
                 return;
             }
@@ -1655,7 +1663,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         }
 
         if (action.equals("backlock_toggle")) {
-            if (!player.isOp() && !player.hasPermission("atconfirmgui.backlock")) {
+            if (!player.isOp() && !player.hasPermission("ataddon.backlock")) {
                 player.closeInventory();
                 return;
             }
@@ -1670,7 +1678,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         }
 
         if (action.equals("warplock_toggle")) {
-            if (!player.isOp() && !player.hasPermission("atconfirmgui.warplock")) {
+            if (!player.isOp() && !player.hasPermission("ataddon.warplock")) {
                 player.closeInventory();
                 return;
             }
@@ -1709,6 +1717,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             case "menu_rtp_locked" -> { rtpBlockedFor(player); return; }
             case "menu_back_locked" -> { backBlockedFor(player); return; }
             case "menu_warps" -> { openWarpsGui(player); return; }
+            case "menu_afk" -> { openAfkGui(player); return; }
             case "menu_spawn" -> {
                 player.closeInventory();
                 if (deniedByCombat(player)) return;
