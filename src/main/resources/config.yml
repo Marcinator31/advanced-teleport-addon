@@ -16,3 +16,7 @@ block-teleport-in-combat: true
 # Server-wide RTP lock. When true, /rtp is blocked for normal players.
 # Toggle this in-game with /rtplock (ops) instead of editing by hand.
 rtp-locked: false
+
+# Server-wide /back lock. When true, /back is blocked for normal players.
+# Toggle this in-game with /backlock (ops) instead of editing by hand.
+back-locked: false
