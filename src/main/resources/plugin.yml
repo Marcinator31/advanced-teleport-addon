@@ -33,6 +33,13 @@ commands:
     description: Lock or unlock /back for all players (ops only).
     usage: /backlock
     permission: atconfirmgui.backlock
+  warps:
+    description: Open the warps GUI.
+    usage: /warps
+  warplock:
+    description: Lock or unlock /warp for all players (ops only).
+    usage: /warplock
+    permission: atconfirmgui.warplock
 
 permissions:
   atconfirmgui.rtplock:
@@ -40,4 +47,7 @@ permissions:
     default: op
   atconfirmgui.backlock:
     description: Allows locking/unlocking /back and bypassing the back lock.
+    default: op
+  atconfirmgui.warplock:
+    description: Allows locking/unlocking /warp and bypassing the warp lock.
     default: op
