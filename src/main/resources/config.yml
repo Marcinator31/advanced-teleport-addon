@@ -20,3 +20,14 @@ rtp-locked: false
 # Server-wide /back lock. When true, /back is blocked for normal players.
 # Toggle this in-game with /backlock (ops) instead of editing by hand.
 back-locked: false
+
+# Server-wide warp lock. When true, /warp is blocked for normal players.
+# Toggle this in-game with /warplock (ops) instead of editing by hand.
+warp-locked: false
+
+# Enables the /afk command, which opens a small menu that teleports the player
+# to a warp named "afk". OFF by default because many servers already have an
+# /afk command from another plugin (e.g. EssentialsX). Set to true only if you
+# want this plugin to handle /afk. You also need use-warps: true in
+# AdvancedTeleport and a warp created with /setwarp afk.
+afk-command-enabled: false
