@@ -74,6 +74,10 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     // warm-up-timer-duration so the visual lines up with the real teleport.
     private int warmupSeconds = 5;
     private boolean blockInCombat = true;
+    // Mirror AT's warmup-cancel settings so our countdown ends exactly when AT's
+    // teleport does (read from AT's config on startup).
+    private boolean cancelOnRotation = false;
+    private boolean cancelOnMovement = true;
     // Server-wide RTP lock toggled by ops via /rtplock. Persisted in config.yml.
     private boolean rtpLocked = false;
 
@@ -218,6 +222,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             File atConfig = new File(at.getDataFolder(), "config.yml");
             if (!atConfig.exists()) return;
             YamlConfiguration cfg = YamlConfiguration.loadConfiguration(atConfig);
+            // Mirror AT's cancel settings so our countdown reacts the same way.
+            cancelOnRotation = cfg.getBoolean("cancel-warm-up-on-rotation", false);
+            cancelOnMovement = cfg.getBoolean("cancel-warm-up-on-movement", true);
             if (!cfg.contains("warm-up-timer-duration")) return;
             int atWarmup = cfg.getInt("warm-up-timer-duration", warmupSeconds);
             if (atWarmup >= 1) {
@@ -494,16 +501,15 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             long remainMs = totalMs - elapsed;
 
             // Seconds remaining, rounded up: 5000..4001ms -> 5, 4000..3001 -> 4, ...
-            // If wall-clock time is up but AT hasn't fired the teleport yet
-            // (server lag stretched AT's warmup), hold the display at 1s instead
-            // of clearing early. onTeleport() will clear it the moment AT moves us,
-            // and a hard safety stop below prevents a stuck bar.
             int secondsLeft = (int) ((remainMs + 999) / 1000);
             if (secondsLeft < 1) secondsLeft = 1;
 
-            // Hard safety: if we're far past the expected time (e.g. teleport was
-            // silently cancelled by another plugin and no event reached us), stop.
-            if (elapsed > totalMs + 8000L) {
+            // Once the warmup time is up we briefly hold at "1s" to absorb minor
+            // lag between our clock and AT's real teleport. onTeleport() clears
+            // this the instant AT moves the player. But if AT never teleports
+            // (e.g. it silently cancelled the teleport - no event reaches us),
+            // we must NOT sit on screen: after a short grace period, clear it.
+            if (elapsed > totalMs + 1500L) {
                 player.sendActionBar(Component.empty());
                 BukkitTask t = activeCountdowns.remove(player.getUniqueId());
                 if (t != null) t.cancel();
@@ -549,10 +555,18 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         Location from = event.getFrom();
         Location to = event.getTo();
         if (to == null) return;
-        if (from.getBlockX() == to.getBlockX()
-                && from.getBlockY() == to.getBlockY()
-                && from.getBlockZ() == to.getBlockZ()) return;
-        cancelCountdown(event.getPlayer());
+
+        boolean movedBlock = from.getBlockX() != to.getBlockX()
+                || from.getBlockY() != to.getBlockY()
+                || from.getBlockZ() != to.getBlockZ();
+        boolean rotated = from.getYaw() != to.getYaw() || from.getPitch() != to.getPitch();
+
+        // Cancel under the same conditions AT does, so our countdown disappears
+        // exactly when AT aborts the teleport (e.g. when looking around if AT's
+        // cancel-warm-up-on-rotation is enabled).
+        if ((cancelOnMovement && movedBlock) || (cancelOnRotation && rotated)) {
+            cancelCountdown(event.getPlayer());
+        }
     }
 
     @EventHandler(ignoreCancelled = true)
