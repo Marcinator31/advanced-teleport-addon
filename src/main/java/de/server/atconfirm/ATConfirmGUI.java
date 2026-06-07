@@ -3,6 +3,7 @@ package de.server.atconfirm;
 import com.google.common.collect.ImmutableMap;
 import io.github.niestrat99.advancedteleport.api.ATPlayer;
 import io.github.niestrat99.advancedteleport.api.Home;
+import io.github.niestrat99.advancedteleport.api.Warp;
 import io.github.niestrat99.advancedteleport.api.TeleportRequestType;
 import io.github.niestrat99.advancedteleport.api.events.ATTeleportEvent;
 import io.github.niestrat99.advancedteleport.api.events.players.TeleportAcceptEvent;
@@ -82,6 +83,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private boolean rtpLocked = false;
     // Server-wide /back lock toggled by ops via /backlock. Persisted in config.yml.
     private boolean backLocked = false;
+    // Server-wide warp lock toggled by ops via /warplock. Persisted in config.yml.
+    private boolean warpLocked = false;
+    // Whether our /afk command is active. Off by default to avoid clashing with
+    // AFK plugins (EssentialsX etc.) that already register /afk.
+    private boolean afkCommandEnabled = false;
 
     // CombatLogX integration via reflection (no hard dependency).
     private Object combatLogXPlugin;       // ICombatLogX instance
@@ -126,6 +132,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         blockInCombat = getConfig().getBoolean("block-teleport-in-combat", true);
         rtpLocked = getConfig().getBoolean("rtp-locked", false);
         backLocked = getConfig().getBoolean("back-locked", false);
+        warpLocked = getConfig().getBoolean("warp-locked", false);
+        afkCommandEnabled = getConfig().getBoolean("afk-command-enabled", false);
         // Automatically match AT's warm-up-timer-duration if we can read it, so the
         // countdown always lines up with the real teleport without the server owner
         // keeping two values in sync. Our own config value is just a fallback.
@@ -635,7 +643,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         // Only intercept the labels we actually handle.
         switch (label) {
             case "tpa", "tpahere", "tpaccept", "tpauto", "tpsettings", "settings",
-                 "rtp", "tpr", "menu", "tpmenu", "homes", "rtplock", "back", "backlock" -> {
+                 "rtp", "tpr", "menu", "tpmenu", "homes", "rtplock", "back", "backlock",
+                 "warp", "warps", "warplock", "afk" -> {
                 String[] args = new String[parts.length - 1];
                 System.arraycopy(parts, 1, args, 0, args.length);
 
@@ -645,6 +654,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 // the with-args case, so check here too.
                 if (label.equals("homes") && args.length > 0) {
                     return; // fall through to AT
+                }
+                // /afk is opt-in; if disabled, don't intercept it so any other
+                // AFK plugin keeps working normally.
+                if (label.equals("afk") && !afkCommandEnabled) {
+                    return; // fall through to whatever else handles /afk
                 }
 
                 event.setCancelled(true);
@@ -903,6 +917,37 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 openBackLockGui(player);
                 return true;
             }
+            case "warps" -> {
+                if (lacksPerm(player, "at.member.warps")) return true;
+                openWarpsGui(player);
+                return true;
+            }
+            case "warp" -> {
+                if (args.length == 0) {
+                    if (lacksPerm(player, "at.member.warps")) return true;
+                    openWarpsGui(player);
+                } else {
+                    if (warpBlockedFor(player)) return true;
+                    if (deniedByCombat(player)) return true;
+                    if (!isValidName(args[0])) { player.sendMessage("\u00a7c" + "Invalid warp name."); return true; }
+                    player.performCommand("advancedteleport:warp " + args[0]);
+                }
+                return true;
+            }
+            case "warplock" -> {
+                if (!player.isOp() && !player.hasPermission("atconfirmgui.warplock")) {
+                    player.sendMessage("\u00a7c" + "You don't have permission to do that.");
+                    return true;
+                }
+                openWarpLockGui(player);
+                return true;
+            }
+            case "afk" -> {
+                // Disabled by default; only handle it if the server opted in.
+                if (!afkCommandEnabled) return false;
+                openAfkGui(player);
+                return true;
+            }
             case "back" -> {
                 if (backBlockedFor(player)) return true;
                 if (deniedByCombat(player)) return true;
@@ -929,20 +974,44 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 List.of("\u00a77" + "View, set and manage", "\u00a77" + "your homes."),
                 "menu_homes"));
 
-        inv.setItem(11, button(Material.GRASS_BLOCK,
-                "\u00a7d\u00a7l" + "Random Teleport",
-                List.of("\u00a77" + "Teleport to a random", "\u00a77" + "location in the wild."),
-                "menu_rtp"));
+        // RTP - show as locked (red) for players who can't bypass the lock.
+        boolean rtpBlocked = rtpLocked && !(player.isOp() || player.hasPermission("atconfirmgui.rtplock"));
+        if (rtpBlocked) {
+            inv.setItem(11, button(Material.RED_STAINED_GLASS_PANE,
+                    "\u00a7c\u00a7l" + "Random Teleport",
+                    List.of("\u00a7c" + "Currently locked by an admin."),
+                    "menu_rtp_locked"));
+        } else {
+            inv.setItem(11, button(Material.GRASS_BLOCK,
+                    "\u00a7d\u00a7l" + "Random Teleport",
+                    List.of("\u00a77" + "Teleport to a random", "\u00a77" + "location in the wild."),
+                    "menu_rtp"));
+        }
 
         inv.setItem(12, button(Material.RED_BED,
                 "\u00a7e\u00a7l" + "Spawn",
                 List.of("\u00a77" + "Teleport to spawn."),
                 "menu_spawn"));
 
-        inv.setItem(14, button(Material.CLOCK,
-                "\u00a7b\u00a7l" + "Back",
-                List.of("\u00a77" + "Return to your previous", "\u00a77" + "location."),
-                "menu_back"));
+        // Back - show as locked (red) for players who can't bypass the lock.
+        boolean backBlocked = backLocked && !(player.isOp() || player.hasPermission("atconfirmgui.backlock"));
+        if (backBlocked) {
+            inv.setItem(13, button(Material.RED_STAINED_GLASS_PANE,
+                    "\u00a7c\u00a7l" + "Back",
+                    List.of("\u00a7c" + "Currently locked by an admin."),
+                    "menu_back_locked"));
+        } else {
+            inv.setItem(13, button(Material.CLOCK,
+                    "\u00a7b\u00a7l" + "Back",
+                    List.of("\u00a77" + "Return to your previous", "\u00a77" + "location."),
+                    "menu_back"));
+        }
+
+        // Warps browser.
+        inv.setItem(14, button(Material.LODESTONE,
+                "\u00a7b\u00a7l" + "Warps",
+                List.of("\u00a77" + "Browse and teleport", "\u00a77" + "to server warps."),
+                "menu_warps"));
 
         inv.setItem(15, button(Material.COMPARATOR,
                 "\u00a7f\u00a7l" + "Settings",
@@ -1177,6 +1246,111 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     List.of("\u00a77" + "Players can use /back.",
                             "", "\u00a7e" + "Click " + "\u00a77" + "to lock"),
                     "backlock_toggle"));
+        }
+        player.openInventory(inv);
+    }
+
+    private boolean warpBlockedFor(Player player) {
+        if (!warpLocked) return false;
+        if (player.isOp() || player.hasPermission("atconfirmgui.warplock")) return false;
+        sendActionBar(player, Component.text("\u2717 Warps are blocked", NamedTextColor.RED), 60L);
+        return true;
+    }
+
+    private void openWarpLockGui(Player player) {
+        Inventory inv = createGui(player, 27, "\u00a78" + "Warp Lock");
+        if (warpLocked) {
+            inv.setItem(13, button(Material.RED_STAINED_GLASS_PANE,
+                    "\u00a7c\u00a7l" + "Warps are LOCKED",
+                    List.of("\u00a77" + "Players cannot use /warp.",
+                            "", "\u00a7e" + "Click " + "\u00a77" + "to unlock"),
+                    "warplock_toggle"));
+        } else {
+            inv.setItem(13, button(Material.LIME_STAINED_GLASS_PANE,
+                    "\u00a7a\u00a7l" + "Warps are ENABLED",
+                    List.of("\u00a77" + "Players can use /warp.",
+                            "", "\u00a7e" + "Click " + "\u00a77" + "to lock"),
+                    "warplock_toggle"));
+        }
+        player.openInventory(inv);
+    }
+
+    /** Lists all server warps as clickable items. */
+    private void openWarpsGui(Player player) {
+        java.util.Map<String, Warp> warps;
+        try {
+            warps = Warp.warps();
+        } catch (Throwable t) {
+            player.sendMessage("\u00a7c" + "Warps are not available.");
+            return;
+        }
+        if (warps == null) warps = new HashMap<>();
+
+        java.util.List<String> names = new java.util.ArrayList<>(warps.keySet());
+        java.util.Collections.sort(names);
+
+        // Size the GUI to fit all warps (multiple of 9, min 27, max 54).
+        int rows = Math.max(3, Math.min(6, (int) Math.ceil((names.size() + 1) / 9.0)));
+        Inventory inv = createGui(player, rows * 9, "\u00a78" + "Warps");
+
+        int slot = 0;
+        int maxSlots = rows * 9;
+        for (String name : names) {
+            if (slot >= maxSlots) break;
+            Warp w = warps.get(name);
+            String coords = "";
+            if (w != null && w.getLocation() != null) {
+                Location l = w.getLocation();
+                coords = "\u00a77" + "World: " + "\u00a7f"
+                        + (l.getWorld() != null ? l.getWorld().getName() : "?")
+                        + "\u00a77" + "  (" + "\u00a7f"
+                        + l.getBlockX() + ", " + l.getBlockY() + ", " + l.getBlockZ() + "\u00a77" + ")";
+            }
+            inv.setItem(slot, button(Material.LODESTONE,
+                    "\u00a7b\u00a7l" + name,
+                    List.of(coords, "", "\u00a7e" + "Click " + "\u00a77" + "to teleport"),
+                    "warp_tp:" + name));
+            slot++;
+        }
+        if (names.isEmpty()) {
+            inv.setItem(maxSlots / 2, button(Material.BARRIER,
+                    "\u00a7c" + "No warps set",
+                    List.of("\u00a77" + "An admin can create warps", "\u00a77" + "with /setwarp."),
+                    "noop"));
+        }
+        player.openInventory(inv);
+    }
+
+    /**
+     * Confirmation GUI for /afk: teleports the player to the warp named "afk".
+     * Shows a friendly notice if that warp doesn't exist.
+     */
+    private void openAfkGui(Player player) {
+        boolean hasAfkWarp = false;
+        try {
+            java.util.Map<String, Warp> warps = Warp.warps();
+            if (warps != null) {
+                for (String n : warps.keySet()) {
+                    if (n.equalsIgnoreCase("afk")) { hasAfkWarp = true; break; }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        Inventory inv = createGui(player, 27, "\u00a78" + "AFK");
+        if (hasAfkWarp) {
+            inv.setItem(13, button(Material.GRASS_BLOCK,
+                    "\u00a7a\u00a7l" + "Go AFK",
+                    List.of(
+                            "\u00a77" + "Teleport to the AFK area.",
+                            "",
+                            "\u00a7e" + "Click " + "\u00a77" + "to teleport"),
+                    "warp_tp:afk"));
+        } else {
+            inv.setItem(13, button(Material.BARRIER,
+                    "\u00a7c\u00a7l" + "No AFK area set",
+                    List.of("\u00a77" + "An admin needs to create a warp",
+                            "\u00a77" + "named \"afk\" with /setwarp afk."),
+                    "noop"));
         }
         player.openInventory(inv);
     }
@@ -1457,11 +1631,38 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             return;
         }
 
+        if (action.equals("warplock_toggle")) {
+            if (!player.isOp() && !player.hasPermission("atconfirmgui.warplock")) {
+                player.closeInventory();
+                return;
+            }
+            warpLocked = !warpLocked;
+            getConfig().set("warp-locked", warpLocked);
+            saveConfig();
+            player.sendMessage(warpLocked
+                    ? "\u00a7c" + "Warps are now LOCKED for all players."
+                    : "\u00a7a" + "Warps are now ENABLED for all players.");
+            openWarpLockGui(player); // refresh the pane
+            return;
+        }
+
+        if (action.startsWith("warp_tp:")) {
+            String name = action.substring("warp_tp:".length());
+            player.closeInventory();
+            if (warpBlockedFor(player)) return;
+            if (deniedByCombat(player)) return;
+            player.performCommand("advancedteleport:warp " + name);
+            return;
+        }
+
         // ---- Main menu buttons ----
         switch (action) {
             case "menu_homes" -> { openHomesGui(player); return; }
             case "menu_settings" -> { openSettings(player); return; }
             case "menu_rtp" -> { if (!rtpBlockedFor(player)) openRtpConfirm(player); return; }
+            case "menu_rtp_locked" -> { rtpBlockedFor(player); return; }
+            case "menu_back_locked" -> { backBlockedFor(player); return; }
+            case "menu_warps" -> { openWarpsGui(player); return; }
             case "menu_spawn" -> {
                 player.closeInventory();
                 if (deniedByCombat(player)) return;
