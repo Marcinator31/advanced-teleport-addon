@@ -27,6 +27,7 @@ import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
@@ -38,13 +39,16 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.io.File;
 import java.lang.reflect.Method;
+import org.bukkit.configuration.file.YamlConfiguration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class ATConfirmGUI extends JavaPlugin implements Listener {
 
@@ -61,13 +65,17 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     // ---- Per-player tpauto action-bar refresher (so toggling can't stack tasks) ----
     private final Map<UUID, BukkitTask> autoBarTasks = new HashMap<>();
     // ---- Players we're waiting on to type a home name in chat ----
-    private final Set<UUID> awaitingHomeName = new HashSet<>();
+    // Value is "" for a brand-new home, or the existing home name when renaming.
+    // ConcurrentHashMap because it's touched from the async chat event too.
+    private final Map<UUID, String> awaitingHomeName = new ConcurrentHashMap<>();
 
 
     // Loaded from config.yml (defaults: warmup 5s). MUST match AT's
     // warm-up-timer-duration so the visual lines up with the real teleport.
     private int warmupSeconds = 5;
     private boolean blockInCombat = true;
+    // Server-wide RTP lock toggled by ops via /rtplock. Persisted in config.yml.
+    private boolean rtpLocked = false;
 
     // CombatLogX integration via reflection (no hard dependency).
     private Object combatLogXPlugin;       // ICombatLogX instance
@@ -110,8 +118,17 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         saveDefaultConfig();
         warmupSeconds = Math.max(1, getConfig().getInt("warmup-seconds", 5));
         blockInCombat = getConfig().getBoolean("block-teleport-in-combat", true);
+        rtpLocked = getConfig().getBoolean("rtp-locked", false);
+        // Automatically match AT's warm-up-timer-duration if we can read it, so the
+        // countdown always lines up with the real teleport without the server owner
+        // keeping two values in sync. Our own config value is just a fallback.
+        syncWarmupFromAdvancedTeleport();
+        loadPlayerSettings();
         setupCombatLogX();
         Bukkit.getPluginManager().registerEvents(this, this);
+        // Auto-configure AT's messages so our hotbar countdown + confirm GUIs work
+        // without the server owner editing any files (plug & play for Modrinth).
+        Bukkit.getScheduler().runTaskLater(this, this::autoConfigureAdvancedTeleport, 20L);
         getLogger().info("ATConfirmGUI enabled.");
     }
 
@@ -127,6 +144,167 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     // =====================================================================
     //  COMBATLOGX INTEGRATION (reflection, optional dependency)
     // =====================================================================
+
+    /**
+     * Adjusts AdvancedTeleport's custom-messages.yml so our own hotbar countdown
+     * and confirm GUIs take over, then reloads AT. Runs once on startup and only
+     * rewrites the file if something actually changed, so it's safe to repeat.
+     */
+    // =====================================================================
+    //  PLAYER SETTINGS PERSISTENCE  (survives restarts)
+    // =====================================================================
+
+    private File playerSettingsFile() {
+        return new File(getDataFolder(), "players.yml");
+    }
+
+    private void loadPlayerSettings() {
+        try {
+            File f = playerSettingsFile();
+            if (!f.exists()) return;
+            YamlConfiguration y = YamlConfiguration.loadConfiguration(f);
+            readUuidList(y, "autoAccept", autoAccept);
+            readUuidList(y, "noConfirmGui", noConfirmGui);
+            readUuidList(y, "blockTpa", blockTpa);
+            readUuidList(y, "blockTpahere", blockTpahere);
+        } catch (Throwable t) {
+            getLogger().warning("Could not load players.yml: " + t.getMessage());
+        }
+    }
+
+    private void readUuidList(YamlConfiguration y, String key, Set<UUID> target) {
+        for (String s : y.getStringList(key)) {
+            try { target.add(UUID.fromString(s)); } catch (IllegalArgumentException ignored) {}
+        }
+    }
+
+    private void savePlayerSettings() {
+        // Snapshot on the main thread, then write to disk off-thread so rapid
+        // settings toggles never block the server with synchronous file I/O.
+        final java.util.List<String> auto = toStringList(autoAccept);
+        final java.util.List<String> noGui = toStringList(noConfirmGui);
+        final java.util.List<String> bTpa = toStringList(blockTpa);
+        final java.util.List<String> bHere = toStringList(blockTpahere);
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                if (!getDataFolder().exists()) getDataFolder().mkdirs();
+                YamlConfiguration y = new YamlConfiguration();
+                y.set("autoAccept", auto);
+                y.set("noConfirmGui", noGui);
+                y.set("blockTpa", bTpa);
+                y.set("blockTpahere", bHere);
+                y.save(playerSettingsFile());
+            } catch (Throwable t) {
+                getLogger().warning("Could not save players.yml: " + t.getMessage());
+            }
+        });
+    }
+
+    private java.util.List<String> toStringList(Set<UUID> set) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (UUID u : set) out.add(u.toString());
+        return out;
+    }
+
+    /**
+     * Reads AdvancedTeleport's warm-up-timer-duration from its config.yml and
+     * uses it as our countdown length, so the visual always matches AT's real
+     * warmup. Falls back to our own config value if AT's can't be read.
+     */
+    private void syncWarmupFromAdvancedTeleport() {
+        try {
+            org.bukkit.plugin.Plugin at = Bukkit.getPluginManager().getPlugin("AdvancedTeleport");
+            if (at == null) return;
+            File atConfig = new File(at.getDataFolder(), "config.yml");
+            if (!atConfig.exists()) return;
+            YamlConfiguration cfg = YamlConfiguration.loadConfiguration(atConfig);
+            if (!cfg.contains("warm-up-timer-duration")) return;
+            int atWarmup = cfg.getInt("warm-up-timer-duration", warmupSeconds);
+            if (atWarmup >= 1) {
+                if (atWarmup != warmupSeconds) {
+                    getLogger().info("Matched countdown to AdvancedTeleport's warm-up-timer-duration: "
+                            + atWarmup + "s.");
+                }
+                warmupSeconds = atWarmup;
+            }
+        } catch (Throwable t) {
+            getLogger().warning("Could not read AdvancedTeleport's warmup duration: " + t.getMessage());
+        }
+    }
+
+    private void autoConfigureAdvancedTeleport() {
+        try {
+            org.bukkit.plugin.Plugin at = Bukkit.getPluginManager().getPlugin("AdvancedTeleport");
+            if (at == null) return;
+
+            File atFolder = at.getDataFolder();
+            File messages = new File(atFolder, "custom-messages.yml");
+            if (!messages.exists()) {
+                getLogger().info("AT custom-messages.yml not found yet; skipping auto-config.");
+                return;
+            }
+
+            YamlConfiguration cfg = YamlConfiguration.loadConfiguration(messages);
+            boolean changed = false;
+
+            // 1) Silence AT's own warmup/cancel hotbar + title messages so they
+            //    don't fight our action-bar countdown. A single space keeps AT
+            //    from sending its default text.
+            String[] blankFields = {
+                    "Teleport.eventBeforeTP",
+                    "Teleport.eventTeleport",
+                    "Teleport.eventMovement",
+                    "Teleport.eventDamage"
+            };
+            for (String path : blankFields) {
+                // Only touch fields that already exist, so we never inject keys
+                // that this AT version doesn't use.
+                if (cfg.contains(path) && !"".equals(cfg.get(path))) { cfg.set(path, ""); changed = true; }
+            }
+            // Title/subtitle need a single space, not empty (empty -> AT default).
+            String[] spaceFields = {
+                    "Teleport.eventBeforeTP_title.0",
+                    "Teleport.eventBeforeTP_title.20",
+                    "Teleport.eventBeforeTP_title.40",
+                    "Teleport.eventBeforeTP_title.60",
+                    "Teleport.eventBeforeTP_subtitle.0",
+                    "Teleport.eventBeforeTP_subtitle.60",
+                    "Teleport.eventMovement_title.0"
+            };
+            for (String path : spaceFields) {
+                if (cfg.contains(path) && !" ".equals(cfg.get(path))) { cfg.set(path, " "); changed = true; }
+            }
+
+            // Route AT's chat [ACCEPT]/[DENY] buttons through OUR commands so the
+            // confirm GUI and combat check apply to clicks too. AT's defaults use
+            // /tpayes and /tpano (which bypass us); rewrite them to /tpaccept and
+            // /tpdeny, which our interceptor catches.
+            String[] buttonFields = {
+                    "Info.tpaRequestReceived",
+                    "Info.tpaRequestHere"
+            };
+            for (String path : buttonFields) {
+                String val = cfg.getString(path);
+                if (val == null) continue;
+                String fixed = val
+                        .replace("/tpayes <player>", "/tpaccept")
+                        .replace("/tpayes", "/tpaccept")
+                        .replace("/tpano <player>", "/tpdeny")
+                        .replace("/tpano", "/tpdeny");
+                if (!fixed.equals(val)) { cfg.set(path, fixed); changed = true; }
+            }
+
+            if (changed) {
+                cfg.save(messages);
+                getLogger().info("Adjusted AdvancedTeleport custom-messages.yml for ATConfirmGUI.");
+                // Reload AT so the changes take effect immediately.
+                Bukkit.getScheduler().runTaskLater(this, () ->
+                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "advancedteleport:at reload"), 20L);
+            }
+        } catch (Throwable t) {
+            getLogger().warning("Could not auto-configure AdvancedTeleport: " + t.getMessage());
+        }
+    }
 
     private void setupCombatLogX() {
         if (!blockInCombat) return;
@@ -223,6 +401,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         Player whoTeleports = isHere ? receiver : sender;
         Player target = isHere ? sender : receiver;
         if (whoTeleports == null) return;
+        // If the travelling player is combat-tagged, AT's teleport will be blocked
+        // elsewhere; don't show a misleading countdown.
+        if (isInCombat(whoTeleports)) return;
         String dest = (target != null) ? target.getName() : null;
         // TPAHere = dark aqua, TPA = blue, so the two are visually distinct.
         NamedTextColor color = isHere ? NamedTextColor.DARK_AQUA : NamedTextColor.BLUE;
@@ -389,6 +570,15 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         if (t != null) {
             t.cancel();
             player.sendActionBar(Component.empty());
+            // Play the ender-pearl arrival sound, but only for OUR countdown
+            // teleports (t != null) - not for unrelated teleports like pearls or
+            // admin /tp. Scheduled a tick later so it plays at the destination.
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (player.isOnline()) {
+                    player.playSound(player.getLocation(),
+                            Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
+                }
+            });
         }
     }
 
@@ -404,19 +594,84 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     //  HOME-NAME CHAT INPUT  (player typed a name after clicking an empty slot)
     // =====================================================================
 
+    // =====================================================================
+    //  COMMAND INTERCEPTOR  (so no commands.yml is needed - plug & play)
+    //  We catch AT's own command labels and route them to our GUIs instead.
+    // =====================================================================
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onCommandIntercept(PlayerCommandPreprocessEvent event) {
+        String msg = event.getMessage();
+        if (msg.isEmpty() || msg.charAt(0) != '/') return;
+
+        // Strip leading slash, split off the label and arguments.
+        String body = msg.substring(1);
+        String[] parts = body.trim().split("\\s+");
+        if (parts.length == 0) return;
+
+        String label = parts[0].toLowerCase();
+
+        // Never touch explicitly-namespaced calls (e.g. advancedteleport:tpa).
+        // Those are our own pass-through calls to AT and must reach AT directly.
+        if (label.contains(":")) return;
+
+        // Only intercept the labels we actually handle.
+        switch (label) {
+            case "tpa", "tpahere", "tpaccept", "tpauto", "tpsettings", "settings",
+                 "rtp", "tpr", "menu", "tpmenu", "homes", "rtplock" -> {
+                String[] args = new String[parts.length - 1];
+                System.arraycopy(parts, 1, args, 0, args.length);
+
+                // For /homes <player> we let AT handle it (view others' homes),
+                // so only intercept the no-argument form. handleCommand() already
+                // contains this logic, but we must not cancel AT's own command in
+                // the with-args case, so check here too.
+                if (label.equals("homes") && args.length > 0) {
+                    return; // fall through to AT
+                }
+
+                event.setCancelled(true);
+                final Player player = event.getPlayer();
+                // Run on the next tick to stay clear of the command pipeline.
+                Bukkit.getScheduler().runTask(this, () -> {
+                    if (player.isOnline()) handleCommand(player, label, args);
+                });
+            }
+            default -> { /* not ours */ }
+        }
+    }
+
+    /**
+     * Clears a pending home-name prompt after 30s so a player who clicked an
+     * empty slot but never typed a name doesn't have their next unrelated chat
+     * message silently consumed as a home name.
+     */
+    private void scheduleNameInputTimeout(UUID uuid) {
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (awaitingHomeName.remove(uuid) != null) {
+                Player p = Bukkit.getPlayer(uuid);
+                if (p != null && p.isOnline()) {
+                    p.sendMessage("\u00a77" + "Home naming timed out.");
+                }
+            }
+        }, 600L); // 30 seconds
+    }
+
     @EventHandler(priority = EventPriority.LOWEST)
     public void onChatName(AsyncPlayerChatEvent event) {
         Player player = event.getPlayer();
-        if (!awaitingHomeName.contains(player.getUniqueId())) return;
+        if (!awaitingHomeName.containsKey(player.getUniqueId())) return;
 
         // This message is for us, not public chat.
         event.setCancelled(true);
-        awaitingHomeName.remove(player.getUniqueId());
+        final String oldName = awaitingHomeName.remove(player.getUniqueId());
 
         String raw = event.getMessage().trim();
 
+        final boolean isRename = oldName != null && !oldName.isEmpty();
+
         if (raw.equalsIgnoreCase("cancel")) {
-            player.sendMessage("\u00a77" + "Home creation cancelled.");
+            player.sendMessage("\u00a77" + (isRename ? "Rename cancelled." : "Home creation cancelled."));
             return;
         }
 
@@ -424,6 +679,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         final String name = raw.replaceAll("\\s+", "_");
         if (!name.matches("[A-Za-z0-9_]{1,32}")) {
             player.sendMessage("\u00a7c" + "Invalid name. Use only letters, numbers and underscores (max 32).");
+            return;
+        }
+        // "bed" is reserved by AT for the virtual bed-spawn home.
+        if (name.equalsIgnoreCase("bed")) {
+            player.sendMessage("\u00a7c" + "\"bed\" is reserved. Please choose another name.");
             return;
         }
 
@@ -439,13 +699,42 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 player.sendMessage("\u00a7c" + "You already have a home called \"" + name + "\".");
                 return;
             }
-            if (!atp.canSetMoreHomes()) {
-                player.sendMessage("\u00a7c" + "You can't set any more homes.");
+
+            if (isRename) {
+                // AT has no direct rename. Recreate at the same spot under the new
+                // name FIRST, then only remove the old one once the new one exists,
+                // so a failure can never destroy the home without a replacement.
+                Home old = atp.getHome(oldName);
+                if (old == null || old.getLocation() == null) {
+                    player.sendMessage("\u00a7c" + "That home no longer exists.");
+                    return;
+                }
+                final Location loc = old.getLocation();
+                atp.addHome(name, loc, player);
+                // Verify the new home actually got created before deleting the old.
+                Bukkit.getScheduler().runTaskLater(this, () -> {
+                    if (!player.isOnline()) return;
+                    ATPlayer atp2 = ATPlayer.getPlayer(player);
+                    if (atp2 == null) return;
+                    if (atp2.hasHome(name)) {
+                        atp2.removeHome(oldName, player);
+                        player.sendMessage("\u00a7a" + "Renamed \"" + oldName + "\" to \"" + name + "\".");
+                    } else {
+                        player.sendMessage("\u00a7c" + "Rename failed; your home \"" + oldName + "\" is unchanged.");
+                    }
+                    if (player.isOnline()) openHomesGui(player);
+                }, 8L);
                 return;
+            } else {
+                if (!atp.canSetMoreHomes()) {
+                    player.sendMessage("\u00a7c" + "You can't set any more homes.");
+                    return;
+                }
+                atp.addHome(name, player.getLocation(), player);
+                player.sendMessage("\u00a7a" + "Home \"" + name + "\" set at your location.");
             }
-            atp.addHome(name, player.getLocation(), player);
-            player.sendMessage("\u00a7a" + "Home \"" + name + "\" set at your location.");
-            // Reopen the homes GUI so they see the new home.
+
+            // Reopen the homes GUI so they see the change.
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline()) openHomesGui(player);
             }, 5L);
@@ -458,6 +747,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         cancelCountdownSilently(player);
         if (autoAccept.remove(player.getUniqueId())) {
             stopAutoBar(player);
+            savePlayerSettings();
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (player.isOnline())
                     sendActionBar(player, Component.text("tpauto was disabled on death", NamedTextColor.RED), 40L);
@@ -475,10 +765,42 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             sender.sendMessage("This command can only be used by a player.");
             return true;
         }
+        return handleCommand(player, command.getName().toLowerCase(), args);
+    }
 
-        switch (command.getName().toLowerCase()) {
+    /**
+     * Core command logic, shared by the plugin.yml command executor and the
+     * command interceptor (so the plugin works with or without commands.yml).
+     *
+     * @return true if we handled it (caller should cancel/stop), false otherwise.
+     */
+    /**
+     * Returns true (and notifies the player) if they lack the given AT permission.
+     * Keeps players who can't use a feature from opening its GUI in the first
+     * place. Ops always pass.
+     */
+    private boolean lacksPerm(Player player, String node) {
+        if (player.isOp() || player.hasPermission(node)) return false;
+        player.sendMessage("\u00a7c" + "You don't have permission to do that.");
+        return true;
+    }
+
+    /**
+     * Validates a player-name argument before it is ever placed into a command
+     * action string. This blocks command injection via names containing ';' or
+     * spaces. Allows the characters valid in Java/Bedrock names plumbed through
+     * Geyser (letters, digits, underscore and a leading dot), max 16 chars.
+     */
+    private boolean isValidName(String s) {
+        return s != null && s.matches("\\.?[A-Za-z0-9_]{1,16}");
+    }
+
+    private boolean handleCommand(Player player, String name, String[] args) {
+        switch (name) {
             case "tpa" -> {
                 if (args.length < 1) { player.sendMessage("\u00a7c" + "Usage: /tpa <player>"); return true; }
+                if (lacksPerm(player, "at.member.tpa")) return true;
+                if (!isValidName(args[0])) { player.sendMessage("\u00a7c" + "Invalid player name."); return true; }
                 if (deniedByCombat(player)) return true;
                 if (noConfirmGui.contains(player.getUniqueId())) {
                     player.performCommand("advancedteleport:tpa " + args[0]);
@@ -489,6 +811,8 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             }
             case "tpahere" -> {
                 if (args.length < 1) { player.sendMessage("\u00a7c" + "Usage: /tpahere <player>"); return true; }
+                if (lacksPerm(player, "at.member.tpahere")) return true;
+                if (!isValidName(args[0])) { player.sendMessage("\u00a7c" + "Invalid player name."); return true; }
                 if (deniedByCombat(player)) return true;
                 if (noConfirmGui.contains(player.getUniqueId())) {
                     player.performCommand("advancedteleport:tpahere " + args[0]);
@@ -515,18 +839,22 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     autoAccept.add(player.getUniqueId());
                     sendActionBarPermanent(player, Component.text("\u2714 tpauto enabled", NamedTextColor.GREEN));
                 }
+                savePlayerSettings();
                 return true;
             }
-            case "tpsettings" -> {
+            case "tpsettings", "settings" -> {
                 openSettings(player);
                 return true;
             }
-            case "rtp" -> {
+            case "rtp", "tpr" -> {
+                if (lacksPerm(player, "at.member.tpr")) return true;
+                if (rtpBlockedFor(player)) return true;
                 openRtpConfirm(player);
                 return true;
             }
             case "homes" -> {
                 if (args.length == 0) {
+                    if (lacksPerm(player, "at.member.homes")) return true;
                     // No arguments: open our own homes GUI for the player.
                     openHomesGui(player);
                 } else {
@@ -538,6 +866,18 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 }
                 return true;
             }
+            case "menu", "tpmenu" -> {
+                openMainMenu(player);
+                return true;
+            }
+            case "rtplock" -> {
+                if (!player.isOp() && !player.hasPermission("atconfirmgui.rtplock")) {
+                    player.sendMessage("\u00a7c" + "You don't have permission to do that.");
+                    return true;
+                }
+                openRtpLockGui(player);
+                return true;
+            }
             default -> { return false; }
         }
     }
@@ -545,6 +885,48 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     // =====================================================================
     //  HOMES GUI
     // =====================================================================
+
+    // =====================================================================
+    //  MAIN MENU HUB  (/menu)
+    // =====================================================================
+
+    private void openMainMenu(Player player) {
+        Inventory inv = createGui(player, 27, "\u00a78" + "Teleport Menu");
+
+        inv.setItem(10, button(Material.LIME_BED,
+                "\u00a7a\u00a7l" + "Homes",
+                List.of("\u00a77" + "View, set and manage", "\u00a77" + "your homes."),
+                "menu_homes"));
+
+        inv.setItem(11, button(Material.GRASS_BLOCK,
+                "\u00a7d\u00a7l" + "Random Teleport",
+                List.of("\u00a77" + "Teleport to a random", "\u00a77" + "location in the wild."),
+                "menu_rtp"));
+
+        inv.setItem(12, button(Material.RED_BED,
+                "\u00a7e\u00a7l" + "Spawn",
+                List.of("\u00a77" + "Teleport to spawn."),
+                "menu_spawn"));
+
+        inv.setItem(14, button(Material.CLOCK,
+                "\u00a7b\u00a7l" + "Back",
+                List.of("\u00a77" + "Return to your previous", "\u00a77" + "location."),
+                "menu_back"));
+
+        inv.setItem(15, button(Material.COMPARATOR,
+                "\u00a7f\u00a7l" + "Settings",
+                List.of("\u00a77" + "Toggle confirm GUIs,", "\u00a77" + "tpauto and request types."),
+                "menu_settings"));
+
+        boolean auto = autoAccept.contains(player.getUniqueId());
+        inv.setItem(16, button(auto ? Material.LIME_DYE : Material.GRAY_DYE,
+                (auto ? "\u00a7a" : "\u00a7c") + "\u00a7l" + "TPAuto: " + (auto ? "ON" : "OFF"),
+                List.of("\u00a77" + "Auto-accept incoming", "\u00a77" + "teleport requests.",
+                        "", "\u00a7e" + "Click " + "\u00a77" + "to toggle."),
+                "menu_tpauto"));
+
+        player.openInventory(inv);
+    }
 
     private void openHomesGui(Player player) {
         ATPlayer atp = ATPlayer.getPlayer(player);
@@ -578,6 +960,9 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 // Existing home
                 String name = homeNames.get(i);
                 Home home = homes.get(name);
+                // The "bed" entry is AT's virtual bed-spawn home (add-bed-to-homes),
+                // not a real stored home, so it must not be deleted/renamed/moved.
+                boolean isBed = name.equalsIgnoreCase("bed");
                 String coords = "";
                 if (home != null && home.getLocation() != null) {
                     Location l = home.getLocation();
@@ -586,14 +971,26 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                             + "\u00a77" + "  (" + "\u00a7f"
                             + l.getBlockX() + ", " + l.getBlockY() + ", " + l.getBlockZ() + "\u00a77" + ")";
                 }
-                inv.setItem(slot, button(Material.LIME_BED,
-                        "\u00a7a\u00a7l" + name,
-                        List.of(
-                                coords,
-                                "",
-                                "\u00a7e" + "Left-click " + "\u00a77" + "to teleport",
-                                "\u00a7c" + "Shift-click " + "\u00a77" + "to delete"),
-                        "home_tp:" + name));
+                if (isBed) {
+                    inv.setItem(slot, button(Material.LIME_BED,
+                            "\u00a7d\u00a7l" + name + " \u00a77(bed)",
+                            List.of(
+                                    coords,
+                                    "",
+                                    "\u00a7e" + "Left-click " + "\u00a77" + "to teleport",
+                                    "\u00a78" + "Your bed spawn - set in-game."),
+                            "home_tp:" + name));
+                } else {
+                    inv.setItem(slot, button(Material.LIME_BED,
+                            "\u00a7a\u00a7l" + name,
+                            List.of(
+                                    coords,
+                                    "",
+                                    "\u00a7e" + "Left-click " + "\u00a77" + "to teleport",
+                                    "\u00a7b" + "Right-click " + "\u00a77" + "for options",
+                                    "\u00a7c" + "Shift-click " + "\u00a77" + "to delete"),
+                            "home_tp:" + name));
+                }
             } else if (i < limit) {
                 // Empty, available slot
                 inv.setItem(slot, button(Material.LIGHT_GRAY_STAINED_GLASS_PANE,
@@ -645,6 +1042,34 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         player.openInventory(inv);
     }
 
+    /** Action menu for a single home: rename, move here, delete. */
+    private void openHomeActions(Player player, String homeName) {
+        Inventory inv = createGui(player, 27,
+                "\u00a78" + "Home: " + homeName);
+        inv.setItem(10, button(Material.NAME_TAG,
+                "\u00a7b" + "Rename",
+                List.of("\u00a77" + "Give this home a new name."),
+                "home_rename:" + homeName));
+        inv.setItem(12, button(Material.ENDER_PEARL,
+                "\u00a7d" + "Move here",
+                List.of("\u00a77" + "Move this home to your",
+                        "\u00a77" + "current location."),
+                "home_move:" + homeName));
+        inv.setItem(14, button(Material.LIME_STAINED_GLASS_PANE,
+                "\u00a7a" + "Teleport",
+                List.of("\u00a77" + "Teleport to this home."),
+                "home_tpfromactions:" + homeName));
+        inv.setItem(16, button(Material.RED_STAINED_GLASS_PANE,
+                "\u00a7c" + "Delete",
+                List.of("\u00a77" + "Permanently delete this home."),
+                "home_delete_confirm:" + homeName));
+        inv.setItem(22, button(Material.BARRIER,
+                "\u00a77" + "Back",
+                List.of("\u00a78" + "Return to your homes."),
+                "home_back"));
+        player.openInventory(inv);
+    }
+
     // =====================================================================
     //  RTP CONFIRM GUI (own inventory so the click reaches this plugin)
     // =====================================================================
@@ -658,6 +1083,40 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                         "",
                         "\u00a7e" + "Click " + "\u00a77" + "to start"),
                 "[close];start_countdown;advancedteleport:tpr"));
+        player.openInventory(inv);
+    }
+
+    // =====================================================================
+    //  RTP LOCK  (op-only server-wide toggle via /rtplock)
+    // =====================================================================
+
+    /**
+     * Returns true (and shows a hotbar message) if RTP is locked and the player
+     * is not allowed to bypass it. Ops / permission holders are never blocked.
+     */
+    private boolean rtpBlockedFor(Player player) {
+        if (!rtpLocked) return false;
+        if (player.isOp() || player.hasPermission("atconfirmgui.rtplock")) return false;
+        sendActionBar(player, Component.text("\u2717 RTP is blocked", NamedTextColor.RED), 60L);
+        return true;
+    }
+
+    private void openRtpLockGui(Player player) {
+        Inventory inv = createGui(player, 27, "\u00a78" + "RTP Lock");
+        // Green pane = RTP enabled, red pane = RTP locked. Clicking toggles.
+        if (rtpLocked) {
+            inv.setItem(13, button(Material.RED_STAINED_GLASS_PANE,
+                    "\u00a7c\u00a7l" + "RTP is LOCKED",
+                    List.of("\u00a77" + "Players cannot use /rtp.",
+                            "", "\u00a7e" + "Click " + "\u00a77" + "to unlock"),
+                    "rtplock_toggle"));
+        } else {
+            inv.setItem(13, button(Material.LIME_STAINED_GLASS_PANE,
+                    "\u00a7a\u00a7l" + "RTP is ENABLED",
+                    List.of("\u00a77" + "Players can use /rtp.",
+                            "", "\u00a7e" + "Click " + "\u00a77" + "to lock"),
+                    "rtplock_toggle"));
+        }
         player.openInventory(inv);
     }
 
@@ -825,8 +1284,12 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
         // ---- Homes GUI actions ----
         if (action.startsWith("home_tp:")) {
             String name = action.substring("home_tp:".length());
-            if (event.getClick() == ClickType.SHIFT_LEFT || event.getClick() == ClickType.SHIFT_RIGHT) {
+            boolean isBed = name.equalsIgnoreCase("bed");
+            if (!isBed && (event.getClick() == ClickType.SHIFT_LEFT || event.getClick() == ClickType.SHIFT_RIGHT)) {
                 openDeleteConfirm(player, name);
+            } else if (!isBed && event.getClick() == ClickType.RIGHT) {
+                // Right-click opens an action menu (rename / move / delete).
+                openHomeActions(player, name);
             } else {
                 player.closeInventory();
                 if (deniedByCombat(player)) return;
@@ -845,14 +1308,46 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 return;
             }
             // Ask the player to type a name in chat. We capture the next message.
-            awaitingHomeName.add(player.getUniqueId());
+            awaitingHomeName.put(player.getUniqueId(), "");
             player.closeInventory();
             player.sendMessage("\u00a7e" + "Type a name for your new home in chat.");
             player.sendMessage("\u00a77" + "Type \u00a7fcancel\u00a77 to abort.");
+            scheduleNameInputTimeout(player.getUniqueId());
             return;
         }
         if (action.equals("home_back")) {
             openHomesGui(player);
+            return;
+        }
+        if (action.startsWith("home_rename:")) {
+            String name = action.substring("home_rename:".length());
+            awaitingHomeName.put(player.getUniqueId(), name);
+            player.closeInventory();
+            player.sendMessage("\u00a7e" + "Type the new name for \"" + name + "\" in chat.");
+            player.sendMessage("\u00a77" + "Type \u00a7fcancel\u00a77 to abort.");
+            scheduleNameInputTimeout(player.getUniqueId());
+            return;
+        }
+        if (action.startsWith("home_move:")) {
+            String name = action.substring("home_move:".length());
+            player.closeInventory();
+            ATPlayer atp = ATPlayer.getPlayer(player);
+            if (atp != null && atp.getHome(name) != null) {
+                atp.moveHome(name, player.getLocation(), player);
+                player.sendMessage("\u00a7a" + "Home \"" + name + "\" moved to your location.");
+            } else {
+                player.sendMessage("\u00a7c" + "That home no longer exists.");
+            }
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (player.isOnline()) openHomesGui(player);
+            }, 5L);
+            return;
+        }
+        if (action.startsWith("home_tpfromactions:")) {
+            String name = action.substring("home_tpfromactions:".length());
+            player.closeInventory();
+            if (deniedByCombat(player)) return;
+            player.performCommand("advancedteleport:home " + name);
             return;
         }
         if (action.startsWith("home_delete_confirm:")) {
@@ -871,11 +1366,61 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
             return;
         }
 
+        if (action.equals("rtplock_toggle")) {
+            if (!player.isOp() && !player.hasPermission("atconfirmgui.rtplock")) {
+                player.closeInventory();
+                return;
+            }
+            rtpLocked = !rtpLocked;
+            getConfig().set("rtp-locked", rtpLocked);
+            saveConfig();
+            player.sendMessage(rtpLocked
+                    ? "\u00a7c" + "RTP is now LOCKED for all players."
+                    : "\u00a7a" + "RTP is now ENABLED for all players.");
+            openRtpLockGui(player); // refresh the pane
+            return;
+        }
+
+        // ---- Main menu buttons ----
+        switch (action) {
+            case "menu_homes" -> { openHomesGui(player); return; }
+            case "menu_settings" -> { openSettings(player); return; }
+            case "menu_rtp" -> { if (!rtpBlockedFor(player)) openRtpConfirm(player); return; }
+            case "menu_spawn" -> {
+                player.closeInventory();
+                if (deniedByCombat(player)) return;
+                player.performCommand("advancedteleport:spawn");
+                return;
+            }
+            case "menu_back" -> {
+                player.closeInventory();
+                if (deniedByCombat(player)) return;
+                player.performCommand("advancedteleport:back");
+                return;
+            }
+            case "menu_tpauto" -> {
+                UUID pid = player.getUniqueId();
+                if (autoAccept.contains(pid)) {
+                    autoAccept.remove(pid);
+                    stopAutoBar(player);
+                    sendActionBar(player, Component.text("You disabled tpauto", NamedTextColor.RED), 40L);
+                } else {
+                    autoAccept.add(pid);
+                    sendActionBarPermanent(player, Component.text("\u2714 tpauto enabled", NamedTextColor.GREEN));
+                }
+                savePlayerSettings();
+                openMainMenu(player); // refresh the toggle button
+                return;
+            }
+            default -> { /* fall through */ }
+        }
+
         // ---- Settings toggles ----
         switch (action) {
             case "toggle_confirm" -> {
                 if (noConfirmGui.contains(id)) noConfirmGui.remove(id);
                 else noConfirmGui.add(id);
+                savePlayerSettings();
                 refreshSettings(player);
                 return;
             }
@@ -888,18 +1433,21 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                     autoAccept.add(id);
                     sendActionBarPermanent(player, Component.text("\u2714 tpauto enabled", NamedTextColor.GREEN));
                 }
+                savePlayerSettings();
                 refreshSettings(player);
                 return;
             }
             case "toggle_tpa" -> {
                 if (blockTpa.contains(id)) blockTpa.remove(id);
                 else blockTpa.add(id);
+                savePlayerSettings();
                 refreshSettings(player);
                 return;
             }
             case "toggle_tpahere" -> {
                 if (blockTpahere.contains(id)) blockTpahere.remove(id);
                 else blockTpahere.add(id);
+                savePlayerSettings();
                 refreshSettings(player);
                 return;
             }
@@ -914,8 +1462,11 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
                 player.closeInventory();
             } else if (cmd.equalsIgnoreCase("start_countdown")) {
                 // No-op now: the countdown is started by ATTeleportEvent (type TPR)
-                // when AT actually begins the random teleport. We only guard combat.
+                // when AT actually begins the random teleport. We only guard combat
+                // and the server-wide RTP lock (in case it was locked while the
+                // confirm GUI was already open).
                 if (deniedByCombat(player)) { player.closeInventory(); return; }
+                if (rtpBlockedFor(player)) { player.closeInventory(); return; }
             } else {
                 player.performCommand(cmd);
             }
