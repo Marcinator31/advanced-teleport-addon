@@ -25,5 +25,5 @@ jobs:
       - name: Upload the finished plugin jar
         uses: actions/upload-artifact@v4
         with:
-          name: ATConfirmGUI
-          path: target/ATConfirmGUI.jar
+          name: ATAddon
+          path: target/ATAddon.jar
