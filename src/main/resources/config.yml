@@ -1,8 +1,10 @@
 # ATConfirmGUI configuration
 
 # Length of the teleport warmup countdown shown over the hotbar, in seconds.
-# IMPORTANT: set this to the SAME value as AdvancedTeleport's
-# warm-up-timer-duration so the visual matches the real teleport.
+# NOTE: This is only a fallback. On startup the plugin automatically reads
+# AdvancedTeleport's "warm-up-timer-duration" and matches it, so you normally
+# only need to set the value in AdvancedTeleport's config.yml. This value is
+# used only if AT's config can't be read.
 warmup-seconds: 5
 
 # Block all teleports (tpa, tpahere, tpaccept, home, spawn, back, rtp) while the
@@ -10,3 +12,7 @@ warmup-seconds: 5
 # isn't installed this option simply does nothing. Set to false to allow
 # teleporting during combat.
 block-teleport-in-combat: true
+
+# Server-wide RTP lock. When true, /rtp is blocked for normal players.
+# Toggle this in-game with /rtplock (ops) instead of editing by hand.
+rtp-locked: false
