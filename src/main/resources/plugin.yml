@@ -10,25 +10,27 @@ softdepend:
   - AdvancedTeleport
   - CombatLogX
 
+# Only our OWN commands are declared here. The AdvancedTeleport commands
+# (tpa, tpahere, tpaccept, rtp, homes, home, spawn, back) are intercepted at
+# runtime instead, so they keep AT's own tab-completion and don't show up twice.
 commands:
-  tpa:
-    description: Send a teleport request.
-    usage: /tpa <player>
-  tpahere:
-    description: Ask a player to teleport to you.
-    usage: /tpahere <player>
-  tpaccept:
-    description: Accept a teleport request.
-    usage: /tpaccept
   tpauto:
-    description: Toggle auto-accept for TPA requests.
+    description: Toggle auto-accept for incoming teleport requests.
     usage: /tpauto
   tpsettings:
-    description: Open teleport settings GUI.
+    description: Open the teleport settings GUI.
     usage: /tpsettings
-  rtp:
-    description: Random teleport (opens a confirm GUI).
-    usage: /rtp
-  homes:
-    description: Open your homes GUI.
-    usage: /homes
+    aliases: [settings]
+  menu:
+    description: Open the teleport menu.
+    usage: /menu
+    aliases: [tpmenu]
+  rtplock:
+    description: Lock or unlock /rtp for all players (ops only).
+    usage: /rtplock
+    permission: atconfirmgui.rtplock
+
+permissions:
+  atconfirmgui.rtplock:
+    description: Allows locking/unlocking RTP and bypassing the RTP lock.
+    default: op
