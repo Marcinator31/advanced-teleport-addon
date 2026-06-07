@@ -4,6 +4,7 @@ import com.google.common.collect.ImmutableMap;
 import io.github.niestrat99.advancedteleport.api.ATPlayer;
 import io.github.niestrat99.advancedteleport.api.Home;
 import io.github.niestrat99.advancedteleport.api.Warp;
+import io.github.niestrat99.advancedteleport.api.AdvancedTeleportAPI;
 import io.github.niestrat99.advancedteleport.api.TeleportRequestType;
 import io.github.niestrat99.advancedteleport.api.events.ATTeleportEvent;
 import io.github.niestrat99.advancedteleport.api.events.players.TeleportAcceptEvent;
@@ -1279,7 +1280,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private void openWarpsGui(Player player) {
         java.util.Map<String, Warp> warps;
         try {
-            warps = Warp.warps();
+            warps = AdvancedTeleportAPI.getWarps();
         } catch (Throwable t) {
             player.sendMessage("\u00a7c" + "Warps are not available.");
             return;
@@ -1328,7 +1329,7 @@ public final class ATConfirmGUI extends JavaPlugin implements Listener {
     private void openAfkGui(Player player) {
         boolean hasAfkWarp = false;
         try {
-            java.util.Map<String, Warp> warps = Warp.warps();
+            java.util.Map<String, Warp> warps = AdvancedTeleportAPI.getWarps();
             if (warps != null) {
                 for (String n : warps.keySet()) {
                     if (n.equalsIgnoreCase("afk")) { hasAfkWarp = true; break; }
