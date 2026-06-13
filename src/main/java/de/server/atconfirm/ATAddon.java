@@ -972,7 +972,6 @@ public final class ATAddon extends JavaPlugin implements Listener {
     //  We catch AT's own command labels and route them to our GUIs instead.
     // =====================================================================
 
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     /**
      * AT teleport command labels that should be blocked while a player is in
      * combat, even when typed with a namespace (advancedteleport:tpr) or alias.
@@ -988,6 +987,7 @@ public final class ATAddon extends JavaPlugin implements Listener {
         }
     }
 
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onCommandIntercept(PlayerCommandPreprocessEvent event) {
         String msg = event.getMessage();
         if (msg.isEmpty() || msg.charAt(0) != '/') return;
