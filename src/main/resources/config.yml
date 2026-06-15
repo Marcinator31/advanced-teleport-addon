@@ -1,0 +1,63 @@
+# ATConfirmGUI configuration
+
+# Length of the teleport warmup countdown shown over the hotbar, in seconds.
+# NOTE: This is only a fallback. On startup the plugin automatically reads
+# AdvancedTeleport's "warm-up-timer-duration" and matches it, so you normally
+# only need to set the value in AdvancedTeleport's config.yml. This value is
+# used only if AT's config can't be read.
+warmup-seconds: 5
+
+# Block all teleports (tpa, tpahere, tpaccept, home, spawn, back, rtp) while the
+# player is combat-tagged by CombatLogX. Requires the CombatLogX plugin; if it
+# isn't installed this option simply does nothing. Set to false to allow
+# teleporting during combat.
+block-teleport-in-combat: true
+
+# Server-wide RTP lock. When true, /rtp is blocked for normal players.
+# Toggle this in-game with /rtplock (ops) instead of editing by hand.
+rtp-locked: false
+spawn-locked: false
+
+# Server-wide /back lock. When true, /back is blocked for normal players.
+# Toggle this in-game with /backlock (ops) instead of editing by hand.
+back-locked: false
+
+# Server-wide warp lock. When true, /warp is blocked for normal players.
+# Toggle this in-game with /warplock (ops) instead of editing by hand.
+warp-locked: false
+
+# Enables the /afk command, which opens a small menu that teleports the player
+# to a warp named "afk". OFF by default because many servers already have an
+# /afk command from another plugin (e.g. EssentialsX). Set to true only if you
+# want this plugin to handle /afk. You also need use-warps: true in
+# AdvancedTeleport and a warp created with /setwarp afk.
+afk-command-enabled: false
+
+# Language for all player-facing messages: en, de or esp.
+# You can also edit messages.yml directly to override any individual text.
+# Check Modrinth for a newer version on startup and log a notice if one exists.
+# This only reads the public version list; it never sends any data.
+check-for-updates: true
+
+language: en
+
+# Sounds (Bukkit Sound enum names). sound-countdown plays each second of the
+# warmup; sound-arrival plays on teleport. Leave as-is for the defaults.
+sound-countdown: BLOCK_NOTE_BLOCK_PLING
+sound-arrival: ENTITY_ENDERMAN_TELEPORT
+
+# Enable or disable individual parts of the addon. When a feature is set to
+# false, ATAddon will NOT handle its command and lets it fall through to
+# AdvancedTeleport or another plugin (e.g. if you use a custom RTP menu from
+# DeluxeMenus, set rtp: false here).
+features:
+  tpa-guis: true     # confirmation GUIs for /tpa, /tpahere, /tpaccept
+  rtp: true          # the /rtp confirmation GUI
+  homes: true        # the /homes GUI
+  warps: true        # the /warps and /warp GUI
+  back: true         # /back handling
+  spawn: true        # /spawn handling
+  menu: true         # the /menu hub
+  settings: true     # /tpsettings
+  tpauto: true       # /tpauto toggle
+  tpas: true         # the /tpas request menu
